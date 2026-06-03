@@ -2,6 +2,7 @@ name: Upstream Sync
 
 permissions:
   contents: write
+  actions: write
 
 on:
   schedule:
@@ -37,3 +38,11 @@ jobs:
         run: |
           echo "[Error] 由于上游仓库的 workflow 文件变更，导致 GitHub 自动暂停了本次自动更新，你需要手动 Sync Fork 一次。"
           exit 1
+
+      # GitHub's GITHUB_TOKEN pushes do not trigger push-based workflows,
+      # so we explicitly dispatch the build after sync when new commits arrived.
+      - name: Trigger build after sync
+        if: steps.sync.outputs.has_new_commits == 'true'
+        run: gh workflow run build-yubikey5-rp2350.yml --ref main
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
