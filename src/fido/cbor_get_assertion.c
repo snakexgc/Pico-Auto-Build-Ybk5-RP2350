@@ -684,9 +684,14 @@ int cbor_get_assertion(const uint8_t *data, size_t len, bool next) {
     CBOR_CHECK(cbor_encode_text_stringz(&mapEncoder2, "id"));
     if (selcred) {
         if (resident) {
-            uint8_t cred_idr[CRED_RESIDENT_LEN] = {0};
-            credential_derive_resident(selcred->id.data, selcred->id.len, cred_idr);
-            CBOR_CHECK(cbor_encode_byte_string(&mapEncoder2, cred_idr, sizeof(cred_idr)));
+            if (selcred->residentId.present == true) {
+                CBOR_CHECK(cbor_encode_byte_string(&mapEncoder2, selcred->residentId.data, selcred->residentId.len));
+            }
+            else {
+                uint8_t cred_idr[CRED_RESIDENT_LEN] = {0};
+                credential_derive_resident(selcred->id.data, selcred->id.len, cred_idr);
+                CBOR_CHECK(cbor_encode_byte_string(&mapEncoder2, cred_idr, sizeof(cred_idr)));
+            }
         }
         else {
             CBOR_CHECK(cbor_encode_byte_string(&mapEncoder2, selcred->id.data, selcred->id.len));
@@ -707,7 +712,7 @@ int cbor_get_assertion(const uint8_t *data, size_t len, bool next) {
     if (selcred && selcred->opts.present == true && selcred->opts.rk == ptrue) {
         CBOR_CHECK(cbor_encode_uint(&mapEncoder, 0x04));
         uint8_t lu = 1;
-        if (numberOfCredentials > 1 && allowList_len == 0) {
+        if (numberOfCredentials > 1 && allowList_len == 0 && (flags & FIDO2_AUT_FLAG_UV)) {
             if (selcred->userName.present == true) {
                 lu++;
             }
@@ -718,7 +723,7 @@ int cbor_get_assertion(const uint8_t *data, size_t len, bool next) {
         CBOR_CHECK(cbor_encoder_create_map(&mapEncoder, &mapEncoder2, lu));
         CBOR_CHECK(cbor_encode_text_stringz(&mapEncoder2, "id"));
         CBOR_CHECK(cbor_encode_byte_string(&mapEncoder2, selcred->userId.data, selcred->userId.len));
-        if (numberOfCredentials > 1 && allowList_len == 0) {
+        if (numberOfCredentials > 1 && allowList_len == 0 && (flags & FIDO2_AUT_FLAG_UV)) {
             if (selcred->userName.present == true) {
                 CBOR_CHECK(cbor_encode_text_stringz(&mapEncoder2, "name"));
                 CBOR_CHECK(cbor_encode_text_stringz(&mapEncoder2, selcred->userName.data));

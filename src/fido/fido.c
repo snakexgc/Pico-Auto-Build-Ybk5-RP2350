@@ -25,6 +25,8 @@
 #include "random.h"
 #include "mbedtls/x509_crt.h"
 #include "mbedtls/hkdf.h"
+#include "mbedtls/constant_time.h"
+#include "mbedtls/sha256.h"
 #if defined(USB_ITF_CCID)
 #include "ccid/ccid.h"
 #endif
@@ -35,6 +37,7 @@
 #include "management.h"
 #include "hid/ctap_hid.h"
 #include "ctap2_cbor.h"
+#include "credential.h"
 #include "version.h"
 #include "crypto_utils.h"
 #include "otp.h"
@@ -63,6 +66,8 @@ const uint8_t atr_fido[] = {
     0x3b, 0xfd, 0x13, 0x00, 0x00, 0x81, 0x31, 0xfe, 0x15, 0x80, 0x73, 0xc0, 0x21, 0xc0, 0x57, 0x59,
     0x75, 0x62, 0x69, 0x4b, 0x65, 0x79, 0x40
 };
+
+uint8_t certdev_sha256[32] = { 0 };
 
 static uint8_t fido_get_version_major(void) {
     return PICO_FIDO_VERSION_MAJOR;
@@ -301,7 +306,7 @@ int verify_key(const uint8_t *appId, const uint8_t *keyHandle, mbedtls_ecp_keypa
     memcpy(key_base + CTAP_APPID_SIZE, keyHandle, KEY_PATH_LEN);
     ret = mbedtls_md_hmac(mbedtls_md_info_from_type(MBEDTLS_MD_SHA256), d, 32, key_base, sizeof(key_base), hmac);
     mbedtls_platform_zeroize(d, sizeof(d));
-    return memcmp(keyHandle + KEY_PATH_LEN, hmac, sizeof(hmac));
+    return mbedtls_ct_memcmp(keyHandle + KEY_PATH_LEN, hmac, sizeof(hmac));
 }
 
 int derive_key(const uint8_t *app_id, bool new_key, uint8_t *key_handle, int curve, mbedtls_ecp_keypair *key) {
@@ -433,6 +438,9 @@ int scan_files_fido(void) {
             }
             file_put_data(ef_certdev, cert + sizeof(cert) - ret, (uint16_t)ret);
         }
+        uint8_t *cert_data = file_get_data(ef_certdev);
+        size_t cert_size = file_get_size(ef_certdev);
+        mbedtls_sha256(cert_data, cert_size, certdev_sha256, 0);
     }
     else {
         printf("FATAL ERROR: CERT DEV not found in memory!\r\n");
@@ -492,6 +500,7 @@ void scan_all(void) {
 extern bool needs_power_cycle;
 void init_fido(void) {
     scan_all();
+    credential_migrate_rp_secure();
 #ifdef ENABLE_OTP_APP
     init_otp();
 #endif

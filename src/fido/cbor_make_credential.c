@@ -45,7 +45,7 @@ int cbor_make_credential(const uint8_t *data, size_t len) {
     uint64_t pinUvAuthProtocol = 0, enterpriseAttestation = 0, hmacSecretPinUvAuthProtocol = 1;
     int64_t kty = 2, hmac_alg = 0, crv = 0;
     CborByteString kax = { 0 }, kay = { 0 }, salt_enc = { 0 }, salt_auth = { 0 };
-    bool hmac_secret_mc = false;
+    bool hmac_secret_mc = false, has_credprot = false;
     const bool *pin_complexity_policy = NULL;
     uint8_t *aut_data = NULL;
     size_t resp_size = 0;
@@ -160,7 +160,11 @@ int cbor_make_credential(const uint8_t *data, size_t len) {
                     continue;
                 }
                 CBOR_FIELD_KEY_TEXT_VAL_BOOL(2, "hmac-secret", extensions.hmac_secret);
-                CBOR_FIELD_KEY_TEXT_VAL_UINT(2, "credProtect", extensions.credProtect);
+                if (strcmp(_fd2, "credProtect") == 0) {
+                    CBOR_FIELD_GET_UINT(extensions.credProtect, 2);
+                    has_credprot = true;
+                    continue;
+                }
                 CBOR_FIELD_KEY_TEXT_VAL_BOOL(2, "minPinLength", extensions.minPinLength);
                 CBOR_FIELD_KEY_TEXT_VAL_BYTES(2, "credBlob", extensions.credBlob);
                 CBOR_FIELD_KEY_TEXT_VAL_BOOL(2, "largeBlobKey", extensions.largeBlobKey);
@@ -237,7 +241,7 @@ int cbor_make_credential(const uint8_t *data, size_t len) {
             CBOR_ERROR(CTAP2_ERR_INVALID_CBOR);
         }
         if (strcmp(pubKeyCredParams[i].type.data, "public-key") != 0) {
-            CBOR_ERROR(CTAP2_ERR_CBOR_UNEXPECTED_TYPE);
+            continue;
         }
         if (pubKeyCredParams[i].alg == FIDO2_ALG_ES256 || pubKeyCredParams[i].alg == FIDO2_ALG_ESP256) {
             if (curve <= 0) {
@@ -308,7 +312,10 @@ int cbor_make_credential(const uint8_t *data, size_t len) {
         if (options.uv == ptrue) { //5.3
             CBOR_ERROR(CTAP2_ERR_INVALID_OPTION);
         }
-        if (options.up != NULL) { //5.6
+        if (options.rk == ptrue && (get_opts() & FIDO2_OPT_NORK)) { //5.4
+            CBOR_ERROR(CTAP2_ERR_INVALID_OPTION);
+        }
+        if (options.up == pfalse) { //5.6
             CBOR_ERROR(CTAP2_ERR_INVALID_OPTION);
         }
         //else if (options.up == NULL) //5.7
@@ -317,8 +324,12 @@ int cbor_make_credential(const uint8_t *data, size_t len) {
     if (pinUvAuthParam.present == false && options.uv == pfalse && file_has_data(ef_pin)) { //8.1
         CBOR_ERROR(CTAP2_ERR_PUAT_REQUIRED);
     }
+    if (has_credprot == true && (extensions.credProtect < CRED_PROT_UV_OPTIONAL || extensions.credProtect > CRED_PROT_UV_REQUIRED)) {
+        CBOR_ERROR(CTAP2_ERR_INVALID_OPTION);
+    }
     if (enterpriseAttestation > 0) {
-        if (!(get_opts() & FIDO2_OPT_EA)) {
+        file_t *ef_ee_ea = file_search_by_fid(EF_EE_DEV_EA, NULL, SPECIFY_EF);
+        if (!(get_opts() & FIDO2_OPT_EA) || !file_has_data(ef_ee_ea)) {
             CBOR_ERROR(CTAP1_ERR_INVALID_PARAMETER);
         }
         if (enterpriseAttestation != 1 && enterpriseAttestation != 2) { //9.2.1
@@ -386,6 +397,16 @@ int cbor_make_credential(const uint8_t *data, size_t len) {
 
     if (hmac_secret_mc && extensions.hmac_secret != ptrue) {
         CBOR_ERROR(CTAP2_ERR_MISSING_PARAMETER);
+    }
+    if (hmac_secret_mc) {
+        if (kax.present == false || kay.present == false || crv == 0 || hmac_alg == 0 ||
+            salt_enc.present == false || salt_auth.present == false) {
+            CBOR_ERROR(CTAP2_ERR_MISSING_PARAMETER);
+        }
+        if (salt_enc.len != 32 + (hmacSecretPinUvAuthProtocol - 1) * IV_SIZE &&
+            salt_enc.len != 64 + (hmacSecretPinUvAuthProtocol - 1) * IV_SIZE) {
+            CBOR_ERROR(CTAP1_ERR_INVALID_PARAMETER);
+        }
     }
 
     if (options.up == ptrue || options.up == NULL) { //14.1
