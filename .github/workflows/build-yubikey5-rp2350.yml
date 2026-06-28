@@ -5,6 +5,9 @@ on:
     branches: [ "main", "development" ]
   workflow_dispatch:
 
+permissions:
+  contents: write
+
 jobs:
   build-yubikey5:
     name: Build YubiKey5 firmware for RP2350
@@ -76,7 +79,9 @@ jobs:
           retention-days: 30
 
       - name: Create release
-        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        # Sync dispatches this workflow with --ref main, so both push and
+        # workflow_dispatch runs on main should publish the firmware.
+        if: github.ref == 'refs/heads/main'
         uses: ncipollo/release-action@v1
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
