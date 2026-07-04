@@ -86,6 +86,14 @@ def test_no_setminpin(device, SetMinPin, MCMinPin):
         cfg.set_min_pin_length(MINPINLENGTH-2,rp_ids=['example.com'])
     assert e.value.code == CtapError.ERR.PIN_POLICY_VIOLATION
 
+def test_setminpin_rejects_above_max_pin_length(device):
+    device.reset()
+    ClientPin(device.client()._backend.ctap2).set_pin(PIN)
+    cfg = FidoConfig(device)
+    with pytest.raises(CtapError) as e:
+        cfg.set_min_pin_length(256, rp_ids=['example.com'])
+    assert e.value.code == CtapError.ERR.PIN_POLICY_VIOLATION
+
 def test_setminpin_too_many_rpids(device):
     device.reset()
     ClientPin(device.client()._backend.ctap2).set_pin(PIN)
