@@ -233,6 +233,22 @@ def test_update_user_information(device, client_pin_set):
         "id": cred[CredentialManagement.RESULT.CREDENTIAL_ID]["id"],
         "type": "public-key",
     }
+
+    for wrong_user_id in (user["id"][:-1], b"", user["id"] + b"_other"):
+        with pytest.raises(CtapError) as e:
+            credMgmt._call(
+                CredentialManagement.CMD.UPDATE_USER_INFO,
+                {
+                    CredentialManagement.PARAM.CREDENTIAL_ID: cred_id,
+                    CredentialManagement.PARAM.USER: {
+                        "id": wrong_user_id,
+                        "name": "wrong",
+                        "displayName": "Wrong",
+                    },
+                },
+            )
+        assert e.value.code == CtapError.ERR.INVALID_PARAMETER
+
     updated_user = {
         "id": user["id"],
         "name": "after",
