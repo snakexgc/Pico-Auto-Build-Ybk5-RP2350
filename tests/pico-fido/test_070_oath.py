@@ -116,6 +116,54 @@ def test_otp_pin_set_verify_and_change(reset_oath):
         data=[TAG_PASSWORD, len(new_pin)] + new_pin,
     )
 
+def test_otp_pin_change_stops_at_retry_floor(reset_oath):
+    old_pin = list(b"123456")
+    new_pin = list(b"654321")
+    wrong_pin = list(b"000000")
+
+    send_apdu(
+        reset_oath,
+        INS_SET_PIN,
+        p1=0,
+        p2=0,
+        data=[TAG_PASSWORD, len(old_pin)] + old_pin,
+    )
+    for _ in range(3):
+        with pytest.raises(APDUResponse) as e:
+            send_apdu(
+                reset_oath,
+                INS_CHANGE_PIN,
+                p1=0,
+                p2=0,
+                data=(
+                    [TAG_PASSWORD, len(wrong_pin)] + wrong_pin +
+                    [TAG_NEW_PASSWORD, len(new_pin)] + new_pin
+                ),
+            )
+        assert [e.value.sw1, e.value.sw2] == [0x69, 0x82]
+
+    with pytest.raises(APDUResponse) as e:
+        send_apdu(
+            reset_oath,
+            INS_CHANGE_PIN,
+            p1=0,
+            p2=0,
+            data=(
+                [TAG_PASSWORD, len(old_pin)] + old_pin +
+                [TAG_NEW_PASSWORD, len(new_pin)] + new_pin
+            ),
+        )
+    assert [e.value.sw1, e.value.sw2] == [0x69, 0x82]
+
+    send_apdu(reset_oath, INS_RESET, p1=0xde, p2=0xad)
+    send_apdu(
+        reset_oath,
+        INS_SET_PIN,
+        p1=0,
+        p2=0,
+        data=[TAG_PASSWORD, len(new_pin)] + new_pin,
+    )
+
 def list_apdu(ccid_card):
     resp = send_apdu(ccid_card, INS_LIST, p1=0, p2=0)
     return resp
@@ -195,6 +243,17 @@ def test_auth(reset_oath):
         resp = list_apdu(reset_oath)
     assert([e.value.sw1, e.value.sw2] == [0x69, 0x82])
 
+    pin = list(b"123456")
+    with pytest.raises(APDUResponse) as e:
+        send_apdu(
+            reset_oath,
+            INS_SET_PIN,
+            p1=0,
+            p2=0,
+            data=[TAG_PASSWORD, len(pin)] + pin,
+        )
+    assert [e.value.sw1, e.value.sw2] == [0x69, 0x82]
+
     with pytest.raises(APDUResponse) as e:
         send_apdu(reset_oath, INS_VERIFY_CODE, p1=0, p2=0)
     assert [e.value.sw1, e.value.sw2] == [0x69, 0x82]
@@ -209,6 +268,11 @@ def test_auth(reset_oath):
     exp = [TAG_RESPONSE, 20] + list(hmac.digest(bytes(key), bytes(chal), 'sha1'))
     assert(exp == resp)
     resp = list_apdu(reset_oath)
+
+    send_apdu(reset_oath, 0xA4, 0x04, 0x00, aid)
+    with pytest.raises(APDUResponse) as e:
+        list_apdu(reset_oath)
+    assert [e.value.sw1, e.value.sw2] == [0x69, 0x82]
 
 def test_bothoath(reset_oath):
     digits = 6
