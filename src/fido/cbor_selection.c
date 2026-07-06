@@ -25,7 +25,9 @@ extern char *rp_id, *user_name, *display_name;
 
 int cbor_selection(void) {
     rp_id = user_name = display_name = NULL;
+#ifdef FORCE_BUTTON_WAIT
     force_button_wait = true;
+#endif
     int ret = wait_button_pressed() ;
     force_button_wait = false;
     if (ret == 1) {

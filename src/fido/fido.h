@@ -106,6 +106,7 @@ extern void set_opts(uint8_t);
 #define MAX_RESIDENT_CREDENTIALS  256
 #define MAX_CREDBLOB_LENGTH       128
 #define MAX_MSG_SIZE              1024
+#define MAX_PIN_LENGTH            63
 #define MAX_FRAGMENT_LENGTH       (MAX_MSG_SIZE - 64)
 #define MAX_LARGE_BLOB_SIZE       2048
 #define MAX_RPIDS_MINPIN_LENGTH   120

@@ -258,7 +258,7 @@ int cbor_get_info(void) {
     }
 
     CBOR_CHECK(cbor_encode_uint(&mapEncoder, 0x1D));
-    CBOR_CHECK(cbor_encode_uint(&mapEncoder, 63)); // maxPINLength
+    CBOR_CHECK(cbor_encode_uint(&mapEncoder, MAX_PIN_LENGTH));
 
     CBOR_CHECK(cbor_encode_uint(&mapEncoder, 0x1E));
     CBOR_CHECK(cbor_encode_byte_string(&mapEncoder, enc_cred_store_state, sizeof(enc_cred_store_state)));

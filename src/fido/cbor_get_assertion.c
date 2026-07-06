@@ -774,6 +774,9 @@ err:
         free(aut_data);
     }
     if (error != CborNoError) {
+        if (next == false) {
+            reset_gna_state();
+        }
         if (error == CborErrorImproperValue) {
             return CTAP2_ERR_CBOR_UNEXPECTED_TYPE;
         }

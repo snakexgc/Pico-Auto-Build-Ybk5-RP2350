@@ -34,6 +34,10 @@
 #define MAX_OATH_CRED   255
 #define CHALLENGE_LEN   8
 #define MAX_OTP_COUNTER 3
+#define OTP_PIN_FORMAT_V1 1
+#define OTP_PIN_LEGACY_SIZE 33
+#define OTP_PIN_V1_SIZE 34
+#define OTP_PIN_RETRY_COMMIT_TIMEOUT_MS 500
 #define OATH_CRED_BITMAP_SIZE ((MAX_OATH_CRED + 7) / 8)
 #define OATH_SECURE_KEY_VERSION 1
 #define OATH_SECURE_KEY_OVERHEAD (sizeof(oath_secure_key_magic) + 1 + 12 + 16)
@@ -100,6 +104,7 @@ const uint8_t oath_aid[] = {
 static int oath_select(app_t *a, uint8_t force) {
     (void) force;
     if (cap_supported(CAP_OATH)) {
+        validated = !file_has_data(file_search(EF_OATH_CODE)) && !file_has_data(file_search_by_fid(EF_OTP_PIN, NULL, SPECIFY_EF));
         int migration_ret = oath_migrate_secrets();
         if (migration_ret != PICOKEYS_OK) {
             return migration_ret;
@@ -863,8 +868,65 @@ static int cmd_send_remaining(void) {
     return SW_OK();
 }
 
+static bool otp_pin_matches(const uint8_t *record, uint16_t record_len, const uint8_t *pin, uint16_t pin_len) {
+    uint8_t verifier[32] = { 0 };
+    bool matches = false;
+
+    if (record_len == OTP_PIN_V1_SIZE && record[1] == OTP_PIN_FORMAT_V1) {
+        pin_derive_verifier(pin, pin_len, verifier);
+        matches = mbedtls_ct_memcmp(record + 2, verifier, sizeof(verifier)) == 0;
+    }
+    else if (record_len == OTP_PIN_LEGACY_SIZE && pin_len > 0) {
+        double_hash_pin(pin, pin_len, verifier);
+        matches = mbedtls_ct_memcmp(record + 1, verifier, sizeof(verifier)) == 0;
+    }
+
+    mbedtls_platform_zeroize(verifier, sizeof(verifier));
+    return matches;
+}
+
+static void otp_pin_record_v1(const uint8_t *pin, uint16_t pin_len, uint8_t record[OTP_PIN_V1_SIZE]) {
+    memset(record, 0, OTP_PIN_V1_SIZE);
+    record[0] = MAX_OTP_COUNTER;
+    record[1] = OTP_PIN_FORMAT_V1;
+    pin_derive_verifier(pin, pin_len, record + 2);
+}
+
+typedef enum {
+    OTP_PIN_MATCH,
+    OTP_PIN_MISMATCH,
+    OTP_PIN_BLOCKED,
+    OTP_PIN_STORAGE_ERROR,
+} otp_pin_match_result_t;
+
+static otp_pin_match_result_t oath_check_pin(file_t *ef_otp_pin, uint16_t record_len, const uint8_t *pin, uint16_t pin_len) {
+    uint8_t record[OTP_PIN_V1_SIZE] = { 0 };
+    if (!file_has_data(ef_otp_pin) || file_get_data(ef_otp_pin) == NULL || (record_len != OTP_PIN_LEGACY_SIZE && record_len != OTP_PIN_V1_SIZE)) {
+        return OTP_PIN_STORAGE_ERROR;
+    }
+    memcpy(record, file_get_data(ef_otp_pin), record_len);
+    if (record[0] == 0) {
+        mbedtls_platform_zeroize(record, sizeof(record));
+        return OTP_PIN_BLOCKED;
+    }
+
+    record[0] -= 1;
+    if (file_put_data(ef_otp_pin, record, record_len) != PICOKEYS_OK ||
+        !flash_commit_sync(OTP_PIN_RETRY_COMMIT_TIMEOUT_MS) ||
+        file_get_size(ef_otp_pin) != record_len || file_get_data(ef_otp_pin) == NULL ||
+        file_get_data(ef_otp_pin)[0] != record[0]) {
+        mbedtls_platform_zeroize(record, sizeof(record));
+        return OTP_PIN_STORAGE_ERROR;
+    }
+    mbedtls_platform_zeroize(record, sizeof(record));
+    return otp_pin_matches(file_get_data(ef_otp_pin), record_len, pin, pin_len) ? OTP_PIN_MATCH : OTP_PIN_MISMATCH;
+}
+
 static int cmd_set_otp_pin(void) {
-    uint8_t hsh[33] = { 0 };
+    if (validated == false) {
+        return SW_SECURITY_STATUS_NOT_SATISFIED();
+    }
+    uint8_t record[OTP_PIN_V1_SIZE] = { 0 };
     file_t *ef_otp_pin = file_search_by_fid(EF_OTP_PIN, NULL, SPECIFY_EF);
     if (file_has_data(ef_otp_pin)) {
         return SW_CONDITIONS_NOT_SATISFIED();
@@ -874,17 +936,21 @@ static int cmd_set_otp_pin(void) {
     if (tlv_find_tag(&ctxi, TAG_PASSWORD, &pw) == false) {
         return SW_INCORRECT_PARAMS();
     }
-    hsh[0] = MAX_OTP_COUNTER;
-    double_hash_pin(pw.data, pw.len, hsh + 1);
-    file_put_data(ef_otp_pin, hsh, sizeof(hsh));
+    otp_pin_record_v1(pw.data, pw.len, record);
+    int ret = file_put_data(ef_otp_pin, record, sizeof(record));
+    mbedtls_platform_zeroize(record, sizeof(record));
+    if (ret != PICOKEYS_OK) {
+        return SW_MEMORY_FAILURE();
+    }
     flash_commit();
     return SW_OK();
 }
 
 static int cmd_change_otp_pin(void) {
-    uint8_t hsh[33] = { 0 };
+    uint8_t record[OTP_PIN_V1_SIZE] = { 0 };
     file_t *ef_otp_pin = file_search_by_fid(EF_OTP_PIN, NULL, SPECIFY_EF);
-    if (!file_has_data(ef_otp_pin)) {
+    uint16_t record_len = file_get_size(ef_otp_pin);
+    if (!file_has_data(ef_otp_pin) || (record_len != OTP_PIN_LEGACY_SIZE && record_len != OTP_PIN_V1_SIZE)) {
         return SW_CONDITIONS_NOT_SATISFIED();
     }
     tlv_ctx_t ctxi, pw = { 0 }, new_pw = { 0 };
@@ -892,24 +958,31 @@ static int cmd_change_otp_pin(void) {
     if (tlv_find_tag(&ctxi, TAG_PASSWORD,  &pw) == false) {
         return SW_INCORRECT_PARAMS();
     }
-    double_hash_pin(pw.data, pw.len, hsh + 1);
-    if (mbedtls_ct_memcmp(file_get_data(ef_otp_pin) + 1, hsh + 1, 32) != 0) {
-        return SW_SECURITY_STATUS_NOT_SATISFIED();
-    }
     if (tlv_find_tag(&ctxi, TAG_NEW_PASSWORD, &new_pw) == false) {
         return SW_INCORRECT_PARAMS();
     }
-    hsh[0] = MAX_OTP_COUNTER;
-    double_hash_pin(new_pw.data, new_pw.len, hsh + 1);
-    file_put_data(ef_otp_pin, hsh, sizeof(hsh));
+    otp_pin_match_result_t match = oath_check_pin(ef_otp_pin, record_len, pw.data, pw.len);
+    if (match == OTP_PIN_STORAGE_ERROR) {
+        return SW_MEMORY_FAILURE();
+    }
+    if (match != OTP_PIN_MATCH) {
+        return SW_SECURITY_STATUS_NOT_SATISFIED();
+    }
+    otp_pin_record_v1(new_pw.data, new_pw.len, record);
+    int ret = file_put_data(ef_otp_pin, record, sizeof(record));
+    mbedtls_platform_zeroize(record, sizeof(record));
+    if (ret != PICOKEYS_OK) {
+        return SW_MEMORY_FAILURE();
+    }
     flash_commit();
     return SW_OK();
 }
 
 static int cmd_verify_otp_pin(void) {
-    uint8_t hsh[33] = { 0 }, data_hsh[33];
+    uint8_t record[OTP_PIN_V1_SIZE] = { 0 };
     file_t *ef_otp_pin = file_search_by_fid(EF_OTP_PIN, NULL, SPECIFY_EF);
-    if (!file_has_data(ef_otp_pin)) {
+    uint16_t record_len = file_get_size(ef_otp_pin);
+    if (!file_has_data(ef_otp_pin) || (record_len != OTP_PIN_LEGACY_SIZE && record_len != OTP_PIN_V1_SIZE)) {
         return SW_CONDITIONS_NOT_SATISFIED();
     }
     tlv_ctx_t ctxi, pw = { 0 };
@@ -917,25 +990,29 @@ static int cmd_verify_otp_pin(void) {
     if (tlv_find_tag(&ctxi, TAG_PASSWORD, &pw) == false) {
         return SW_INCORRECT_PARAMS();
     }
-    double_hash_pin(pw.data, pw.len, hsh + 1);
-    memcpy(data_hsh, file_get_data(ef_otp_pin), sizeof(data_hsh));
-    if (data_hsh[0] == 0 || mbedtls_ct_memcmp(data_hsh + 1, hsh + 1, 32) != 0) {
-        if (data_hsh[0] > 0) {
-            data_hsh[0] -= 1;
-        }
-        file_put_data(ef_otp_pin, data_hsh, sizeof(data_hsh));
-        flash_commit();
+    otp_pin_match_result_t match = oath_check_pin(ef_otp_pin, record_len, pw.data, pw.len);
+    if (match == OTP_PIN_STORAGE_ERROR) {
+        return SW_MEMORY_FAILURE();
+    }
+    if (match != OTP_PIN_MATCH) {
         validated = false;
         return SW_SECURITY_STATUS_NOT_SATISFIED();
     }
-    data_hsh[0] = MAX_OTP_COUNTER;
-    file_put_data(ef_otp_pin, data_hsh, sizeof(data_hsh));
+    otp_pin_record_v1(pw.data, pw.len, record);
+    int ret = file_put_data(ef_otp_pin, record, sizeof(record));
+    mbedtls_platform_zeroize(record, sizeof(record));
+    if (ret != PICOKEYS_OK) {
+        return SW_MEMORY_FAILURE();
+    }
     flash_commit();
     validated = true;
     return SW_OK();
 }
 
 static int cmd_verify_hotp(void) {
+    if (validated == false) {
+        return SW_SECURITY_STATUS_NOT_SATISFIED();
+    }
     tlv_ctx_t ctxi, key = { 0 }, chal = { 0 }, name = { 0 }, code = { 0 };
     tlv_ctx_init(apdu.data, (uint16_t)apdu.nc, &ctxi);
     uint32_t code_int = 0;

@@ -23,11 +23,12 @@
 #include "files.h"
 #include "apdu.h"
 #include "credential.h"
+#include "mbedtls/constant_time.h"
 
-uint8_t rp_counter = 1;
-uint8_t rp_total = 0;
-uint8_t cred_counter = 1;
-uint8_t cred_total = 0;
+uint16_t rp_counter = 1;
+uint16_t rp_total = 0;
+uint16_t cred_counter = 1;
+uint16_t cred_total = 0;
 CborByteString rpIdHashx = { 0 };
 
 int cbor_cred_mgmt(const uint8_t *data, size_t len) {
@@ -171,7 +172,7 @@ int cbor_cred_mgmt(const uint8_t *data, size_t len) {
                 CBOR_ERROR(CTAP2_ERR_NOT_ALLOWED);
             }
         }
-        uint8_t skip = 0;
+        uint16_t skip = 0;
         for (int i = 0; i < MAX_RESIDENT_CREDENTIALS; i++) {
             file_t *tef = file_search((uint16_t)(EF_RP + i));
             if (file_has_data(tef) && *file_get_data(tef) > 0) {
@@ -246,7 +247,7 @@ int cbor_cred_mgmt(const uint8_t *data, size_t len) {
             rpIdHash = rpIdHashx;
         }
         file_t *cred_ef = NULL;
-        uint8_t skip = 0;
+        uint16_t skip = 0;
         for (int i = 0; i < MAX_RESIDENT_CREDENTIALS; i++) {
             file_t *tef = file_search((uint16_t)(EF_CRED + i));
             if (file_has_data(tef) && memcmp(file_get_data(tef), rpIdHash.data, 32) == 0) {
@@ -428,7 +429,7 @@ int cbor_cred_mgmt(const uint8_t *data, size_t len) {
                 if (credential_load_resident(ef, rp_id_hash, &cred) != 0) {
                     CBOR_ERROR(CTAP2_ERR_NOT_ALLOWED);
                 }
-                if (memcmp(user.id.data, cred.userId.data, MIN(user.id.len, cred.userId.len)) != 0) {
+                if (user.id.len != cred.userId.len || mbedtls_ct_memcmp(user.id.data, cred.userId.data, user.id.len) != 0) {
                     credential_free(&cred);
                     CBOR_ERROR(CTAP1_ERR_INVALID_PARAMETER);
                 }

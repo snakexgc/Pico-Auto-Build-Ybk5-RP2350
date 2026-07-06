@@ -121,6 +121,26 @@ def test_missing_saltEnc(device,):
         device.GA(extensions={"hmac-secret": { 3: b'1234'}})
     assert e.value.code == CtapError.ERR.MISSING_PARAMETER
 
+def test_make_credential_hmac_secret_mc_empty_salt(device):
+    key_agreement = {
+        1: 2,
+        3: -25,
+        -1: 1,
+        -2: b'\x00' * 32,
+        -3: b'\x00' * 32,
+    }
+    with pytest.raises(CtapError) as e:
+        device.MC(extensions={
+            "hmac-secret": True,
+            "hmac-secret-mc": {
+                1: key_agreement,
+                2: b'',
+                3: b'\x00' * 32,
+                4: 2,
+            },
+        })
+    assert e.value.code == CtapError.ERR.MISSING_PARAMETER
+
 def test_bad_auth(device,  MCHmacSecret):
 
     key_agreement = {

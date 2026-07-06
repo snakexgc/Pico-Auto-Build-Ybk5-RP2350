@@ -249,6 +249,9 @@ int cbor_config(const uint8_t *data, size_t len) {
         if (newMinPinLength == 0) {
             newMinPinLength = currentMinPinLen;
         }
+        else if (newMinPinLength > MAX_PIN_LENGTH) {
+            CBOR_ERROR(CTAP2_ERR_PIN_POLICY_VIOLATION);
+        }
         else if (newMinPinLength > 0 && newMinPinLength < currentMinPinLen) {
             CBOR_ERROR(CTAP2_ERR_PIN_POLICY_VIOLATION);
         }
