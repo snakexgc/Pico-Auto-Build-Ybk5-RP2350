@@ -151,7 +151,7 @@ jobs:
           for profile in "${profiles[@]}"; do
             build_dir="build_${{ matrix.target }}_${profile}"
             echo "::group::${{ matrix.target }} / ${profile}"
-            idf.py -B "${build_dir}" -DVIDPID="${profile}" \
+            idf.py -B "${build_dir}" \
               set-target "${{ matrix.target }}" 2>&1 | tee "${build_dir}.configure.log"
             idf.py -B "${build_dir}" -DVIDPID="${profile}" \
               build 2>&1 | tee -a "${build_dir}.configure.log"
