@@ -43,6 +43,6 @@ jobs:
       # so we explicitly dispatch the build after sync when new commits arrived.
       - name: Trigger build after sync
         if: steps.sync.outputs.has_new_commits == 'true'
-        run: gh workflow run build-yubikey5-rp2350.yml --repo "${GITHUB_REPOSITORY}" --ref main
+        run: gh workflow run Pico_Auto_Build.yml --repo "${GITHUB_REPOSITORY}" --ref main
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

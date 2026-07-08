@@ -1,0 +1,236 @@
+name: Build and release all Pico FIDO variants
+
+on:
+  push:
+    branches: [main, development]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pico-auto-build-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  PICO_SDK_VERSION: "2.1.1"
+  ESP_IDF_VERSION: "v5.5"
+
+jobs:
+  build-pico:
+    name: Build ${{ matrix.board }} variants
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        board: [pico, pico2]
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install Arm build tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake gcc-arm-none-eabi libnewlib-arm-none-eabi libstdc++-arm-none-eabi-newlib
+
+      - name: Install Pico SDK and picotool
+        run: |
+          git clone --branch "${PICO_SDK_VERSION}" --depth 1 --recurse-submodules --shallow-submodules \
+            https://github.com/raspberrypi/pico-sdk.git pico-sdk
+          git clone --depth 1 --recurse-submodules --shallow-submodules \
+            https://github.com/raspberrypi/picotool.git picotool
+          cmake -S picotool -B picotool/build -DPICO_SDK_PATH="${GITHUB_WORKSPACE}/pico-sdk"
+          cmake --build picotool/build --parallel
+          sudo cmake --install picotool/build
+
+      - name: Build all emulated identities
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          profiles=(
+            NitroHSM NitroFIDO2 NitroStart NitroPro Nitro3
+            Yubikey5 YubikeyNeo YubiHSM Gnuk GnuPG
+          )
+          declare -A expected_vidpid=(
+            [NitroHSM]="0x20A0:0x4230"
+            [NitroFIDO2]="0x20A0:0x42B1"
+            [NitroStart]="0x20A0:0x4211"
+            [NitroPro]="0x20A0:0x4108"
+            [Nitro3]="0x20A0:0x42B2"
+            [Yubikey5]="0x1050:0x0407"
+            [YubikeyNeo]="0x1050:0x0116"
+            [YubiHSM]="0x1050:0x0030"
+            [Gnuk]="0x234B:0x0000"
+            [GnuPG]="0x1209:0x2440"
+          )
+
+          mkdir -p release
+          for profile in "${profiles[@]}"; do
+            build_dir="build_${{ matrix.board }}_${profile}"
+            echo "::group::${{ matrix.board }} / ${profile}"
+            cmake -S . -B "${build_dir}" \
+              -DPICO_SDK_PATH="${GITHUB_WORKSPACE}/pico-sdk" \
+              -DPICO_BOARD="${{ matrix.board }}" \
+              -DVIDPID="${profile}" 2>&1 | tee "${build_dir}.configure.log"
+            grep -F "VIDPID:" "${build_dir}.configure.log" | grep -F "'${profile}'"
+            grep -F "${expected_vidpid[$profile]}" "${build_dir}.configure.log"
+            cmake --build "${build_dir}" --parallel
+            mv "${build_dir}/pico_fido.uf2" \
+              "release/pico_fido_${profile}_${{ matrix.board }}.uf2"
+            echo "::endgroup::"
+          done
+
+          sha256sum release/*
+
+      - name: Upload ${{ matrix.board }} firmware
+        uses: actions/upload-artifact@v4
+        with:
+          name: pico-fido-${{ matrix.board }}
+          path: release/*.uf2
+          if-no-files-found: error
+          retention-days: 30
+
+  build-esp32:
+    name: Build ${{ matrix.target }} variants
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: esp32s2
+            chip: ESP32-S2
+          - target: esp32s3
+            chip: ESP32-S3
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install ESP-IDF dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y git wget flex bison gperf python3 python3-pip python3-venv \
+            cmake ninja-build ccache libffi-dev libssl-dev dfu-util libusb-1.0-0
+
+      - name: Install ESP-IDF
+        run: |
+          git clone --branch "${ESP_IDF_VERSION}" --depth 1 --recursive --shallow-submodules \
+            https://github.com/espressif/esp-idf.git esp-idf
+          ./esp-idf/install.sh "${{ matrix.target }}"
+
+      - name: Build all emulated identities
+        shell: bash
+        run: |
+          set -euo pipefail
+          source esp-idf/export.sh
+
+          profiles=(
+            NitroHSM NitroFIDO2 NitroStart NitroPro Nitro3
+            Yubikey5 YubikeyNeo YubiHSM Gnuk GnuPG
+          )
+          declare -A expected_vidpid=(
+            [NitroHSM]="0x20A0:0x4230"
+            [NitroFIDO2]="0x20A0:0x42B1"
+            [NitroStart]="0x20A0:0x4211"
+            [NitroPro]="0x20A0:0x4108"
+            [Nitro3]="0x20A0:0x42B2"
+            [Yubikey5]="0x1050:0x0407"
+            [YubikeyNeo]="0x1050:0x0116"
+            [YubiHSM]="0x1050:0x0030"
+            [Gnuk]="0x234B:0x0000"
+            [GnuPG]="0x1209:0x2440"
+          )
+
+          mkdir -p release
+          for profile in "${profiles[@]}"; do
+            build_dir="build_${{ matrix.target }}_${profile}"
+            echo "::group::${{ matrix.target }} / ${profile}"
+            idf.py -B "${build_dir}" -DVIDPID="${profile}" \
+              set-target "${{ matrix.target }}" 2>&1 | tee "${build_dir}.configure.log"
+            idf.py -B "${build_dir}" -DVIDPID="${profile}" \
+              build 2>&1 | tee -a "${build_dir}.configure.log"
+            grep -F "VIDPID:" "${build_dir}.configure.log" | grep -F "'${profile}'"
+            grep -F "${expected_vidpid[$profile]}" "${build_dir}.configure.log"
+            (
+              cd "${build_dir}"
+              esptool.py --chip "${{ matrix.chip }}" merge_bin \
+                -o "../release/pico_fido_${profile}_${{ matrix.target }}.bin" @flash_args
+            )
+            rm -rf "${build_dir}"
+            echo "::endgroup::"
+          done
+
+          sha256sum release/*
+
+      - name: Upload ${{ matrix.target }} firmware
+        uses: actions/upload-artifact@v4
+        with:
+          name: pico-fido-${{ matrix.target }}
+          path: release/*.bin
+          if-no-files-found: error
+          retention-days: 30
+
+  release:
+    name: Publish firmware release
+    needs: [build-pico, build-esp32]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Download all firmware
+        uses: actions/download-artifact@v4
+        with:
+          pattern: pico-fido-*
+          path: release
+          merge-multiple: true
+
+      - name: Generate checksums
+        run: |
+          cd release
+          sha256sum * > SHA256SUMS.txt
+          cat SHA256SUMS.txt
+
+      - name: Upload complete firmware bundle
+        uses: actions/upload-artifact@v4
+        with:
+          name: pico-fido-all-${{ github.sha }}
+          path: release/*
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Create or update release
+        if: github.ref == 'refs/heads/main'
+        uses: ncipollo/release-action@v1
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          tag: pico-fido-all-${{ github.sha }}
+          commit: ${{ github.sha }}
+          name: All Pico FIDO variants (${{ github.sha }})
+          body: |
+            Automatic build of every upstream-supported VID/PID preset for:
+
+            - Raspberry Pi Pico / RP2040 (`pico`)
+            - Raspberry Pi Pico 2 / RP2350 (`pico2`)
+            - ESP32-S2 (`esp32s2`)
+            - ESP32-S3 (`esp32s3`)
+
+            Included identities: NitroHSM, NitroFIDO2, NitroStart, NitroPro,
+            Nitro3, Yubikey5, YubikeyNeo, YubiHSM, Gnuk, and GnuPG.
+
+            These third-party USB identities are provided for compatibility
+            testing. Only use or redistribute an identity when you are
+            authorized to use its VID/PID.
+          artifacts: "release/*"
+          artifactErrorsFailBuild: true
+          allowUpdates: true
+          replacesArtifacts: true
+          makeLatest: true
+          draft: false
+          prerelease: false
