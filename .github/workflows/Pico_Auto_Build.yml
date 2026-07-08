@@ -12,9 +12,6 @@ concurrency:
   group: pico-auto-build-${{ github.ref }}
   cancel-in-progress: true
 
-env:
-  PICO_SDK_VERSION: "2.1.1"
-
 jobs:
   build-pico:
     name: Build ${{ matrix.board }} variants
@@ -35,9 +32,27 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y cmake gcc-arm-none-eabi libnewlib-arm-none-eabi libstdc++-arm-none-eabi-newlib
 
+      - name: Resolve upstream Pico SDK version
+        id: pico_sdk
+        shell: bash
+        run: |
+          sdk_ref="$(
+            awk '
+              /git clone https:\/\/github.com\/raspberrypi\/pico-sdk/ { found = 1; next }
+              found && $1 == "git" && $2 == "checkout" { print $3; exit }
+            ' workflows/autobuild.sh
+          )"
+          sdk_version="${sdk_ref#tags/}"
+          if [[ -z "${sdk_version}" ]]; then
+            echo "Unable to determine the Pico SDK version from workflows/autobuild.sh" >&2
+            exit 1
+          fi
+          echo "version=${sdk_version}" >> "${GITHUB_OUTPUT}"
+          echo "Using upstream Pico SDK version: ${sdk_version}"
+
       - name: Install Pico SDK and picotool
         run: |
-          git clone --branch "${PICO_SDK_VERSION}" --depth 1 --recurse-submodules --shallow-submodules \
+          git clone --branch "${{ steps.pico_sdk.outputs.version }}" --depth 1 --recurse-submodules --shallow-submodules \
             https://github.com/raspberrypi/pico-sdk.git pico-sdk
           git clone --depth 1 --recurse-submodules --shallow-submodules \
             https://github.com/raspberrypi/picotool.git picotool
