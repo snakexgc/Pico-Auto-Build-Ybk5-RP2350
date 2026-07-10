@@ -38,6 +38,7 @@
 #define OTP_PIN_LEGACY_SIZE 33
 #define OTP_PIN_V1_SIZE 34
 #define OTP_PIN_RETRY_COMMIT_TIMEOUT_MS 500
+#define OATH_ACCESS_CODE_MAX_LEN 65
 #define OATH_CRED_BITMAP_SIZE ((MAX_OATH_CRED + 7) / 8)
 #define OATH_SECURE_KEY_VERSION 1
 #define OATH_SECURE_KEY_OVERHEAD (sizeof(oath_secure_key_magic) + 1 + 12 + 16)
@@ -532,7 +533,7 @@ static int cmd_set_code(void) {
     if (tlv_find_tag(&ctxi, TAG_KEY, &key) == false) {
         return SW_INCORRECT_PARAMS();
     }
-    if (key.len == 1) {
+    if (key.len == 1 || key.len > OATH_ACCESS_CODE_MAX_LEN) {
         return SW_WRONG_DATA();
     }
     if (key.len == 0) {
@@ -555,6 +556,9 @@ static int cmd_set_code(void) {
     int r = mbedtls_md_hmac(md_info, key.data + 1, key.len - 1, chal.data, chal.len, hmac);
     if (r != 0) {
         return SW_EXEC_ERROR();
+    }
+    if (resp.len != mbedtls_md_get_size(md_info)) {
+        return SW_DATA_INVALID();
     }
     if (mbedtls_ct_memcmp(hmac, resp.data, resp.len) != 0) {
         return SW_DATA_INVALID();
@@ -654,7 +658,7 @@ static int cmd_validate(void) {
     }
     key.data = plain_key;
     key.len = plain_key_len;
-    if (plain_key_len < 2) {
+    if (plain_key_len < 2 || plain_key_len > OATH_ACCESS_CODE_MAX_LEN) {
         mbedtls_platform_zeroize(plain_key, plain_key_len);
         free(plain_key);
         return SW_WRONG_DATA();
@@ -671,6 +675,11 @@ static int cmd_validate(void) {
         mbedtls_platform_zeroize(key.data, key.len);
         free(key.data);
         return SW_EXEC_ERROR();
+    }
+    if (resp.len != mbedtls_md_get_size(md_info)) {
+        mbedtls_platform_zeroize(key.data, key.len);
+        free(key.data);
+        return SW_DATA_INVALID();
     }
     if (mbedtls_ct_memcmp(hmac, resp.data, resp.len) != 0) {
         mbedtls_platform_zeroize(key.data, key.len);
@@ -1013,13 +1022,13 @@ static int cmd_verify_hotp(void) {
     if (validated == false) {
         return SW_SECURITY_STATUS_NOT_SATISFIED();
     }
-    tlv_ctx_t ctxi, key = { 0 }, chal = { 0 }, name = { 0 }, code = { 0 };
+    tlv_ctx_t ctxi, key = { 0 }, chal = { 0 }, name = { 0 }, code = { 0 }, prop = { 0 };
     tlv_ctx_init(apdu.data, (uint16_t)apdu.nc, &ctxi);
     uint32_t code_int = 0;
     if (tlv_find_tag(&ctxi, TAG_NAME, &name) == false) {
         return SW_INCORRECT_PARAMS();
     }
-    file_t *ef = file_search_by_fid(EF_OATH_CRED, NULL, SPECIFY_EF);
+    file_t *ef = find_oath_cred(name.data, name.len);
     if (file_has_data(ef) == false) {
         return SW_DATA_INVALID();
     }
@@ -1050,9 +1059,17 @@ static int cmd_verify_hotp(void) {
         free(plain_key);
         return SW_INCORRECT_PARAMS();
     }
-    if (tlv_find_tag(&ctxi, TAG_RESPONSE, &code) == true) {
-        code_int = get_uint32_be(code.data);
+    if (tlv_find_tag(&ctxe, TAG_PROPERTY, &prop) == true && prop.len > 0 && (prop.data[0] & PROP_TOUCH)) {
+        mbedtls_platform_zeroize(plain_key, plain_key_len);
+        free(plain_key);
+        return SW_CONDITIONS_NOT_SATISFIED();
     }
+    if (tlv_find_tag(&ctxi, TAG_RESPONSE, &code) == false || code.len != sizeof(uint32_t)) {
+        mbedtls_platform_zeroize(plain_key, plain_key_len);
+        free(plain_key);
+        return SW_INCORRECT_PARAMS();
+    }
+    code_int = get_uint32_be(code.data);
 
     int ret = calculate_oath(0x01, key.data, key.len, chal.data, chal.len);
     if (ret != PICOKEYS_OK) {
