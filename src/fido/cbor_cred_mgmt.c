@@ -80,6 +80,9 @@ int cbor_cred_mgmt(const uint8_t *data, size_t len) {
                         if (strcmp(_fd3, "transports") == 0) {
                             CBOR_PARSE_ARRAY_START(_f3, 4)
                             {
+                                if (credentialId.transports_len >= sizeof(credentialId.transports) / sizeof(credentialId.transports[0])) {
+                                    CBOR_ERROR(CTAP2_ERR_LIMIT_EXCEEDED);
+                                }
                                 CBOR_FIELD_GET_TEXT(credentialId.transports[credentialId.transports_len], 4);
                                 credentialId.transports_len++;
                             }
