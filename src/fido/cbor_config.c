@@ -127,6 +127,9 @@ int cbor_config(const uint8_t *data, size_t len) {
     if (pinUvAuthProtocol != 1 && pinUvAuthProtocol != 2) {
         CBOR_ERROR(CTAP1_ERR_INVALID_PARAMETER);
     }
+    if (pinUvAuthParam.len != (pinUvAuthProtocol == 1 ? 16 : 32)) {
+        CBOR_ERROR(CTAP2_ERR_PIN_AUTH_INVALID);
+    }
 
     uint8_t *verify_payload = (uint8_t *) calloc(1, 32 + 1 + 1 + raw_subpara_len);
     memset(verify_payload, 0xff, 32);

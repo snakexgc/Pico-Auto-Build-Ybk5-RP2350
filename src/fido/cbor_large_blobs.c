@@ -128,6 +128,12 @@ int cbor_large_blobs(const uint8_t *data, size_t len) {
         if (pinUvAuthProtocol == 0) {
             CBOR_ERROR(CTAP2_ERR_MISSING_PARAMETER);
         }
+        if (pinUvAuthProtocol != 1 && pinUvAuthProtocol != 2) {
+            CBOR_ERROR(CTAP1_ERR_INVALID_PARAMETER);
+        }
+        if (pinUvAuthParam.len != (pinUvAuthProtocol == 1 ? 16 : 32)) {
+            CBOR_ERROR(CTAP2_ERR_PIN_AUTH_INVALID);
+        }
         uint8_t verify_data[70] = { 0 };
         memset(verify_data, 0xff, 32);
         verify_data[32] = 0x0C;
