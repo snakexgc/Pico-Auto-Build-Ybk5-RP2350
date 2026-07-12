@@ -163,6 +163,9 @@ int cbor_config(const uint8_t *data, size_t len) {
             if (mse.init == false) {
                 CBOR_ERROR(CTAP2_ERR_NOT_ALLOWED);
             }
+            if (vendorParamByteString.present == false || vendorParamByteString.len != 32 + 16) {
+                CBOR_ERROR(CTAP1_ERR_INVALID_PARAMETER);
+            }
 
             mbedtls_chachapoly_context chatx;
             int ret = mse_decrypt_ct(vendorParamByteString.data, vendorParamByteString.len);
