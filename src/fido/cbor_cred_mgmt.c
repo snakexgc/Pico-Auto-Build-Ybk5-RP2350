@@ -114,6 +114,10 @@ int cbor_cred_mgmt(const uint8_t *data, size_t len) {
     }
     CBOR_PARSE_MAP_END(map, 1);
 
+    if ((rpIdHash.present && rpIdHash.len != 32) || (credentialId.id.present && credentialId.id.len != CRED_RESIDENT_LEN)) {
+        CBOR_ERROR(CTAP1_ERR_INVALID_PARAMETER);
+    }
+
     if (subcommand != 0x03 && subcommand != 0x05) {
         if (pinUvAuthParam.present == false) {
             CBOR_ERROR(CTAP2_ERR_PUAT_REQUIRED);
