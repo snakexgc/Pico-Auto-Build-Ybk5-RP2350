@@ -579,6 +579,9 @@ bool _is_otp = false;
 static int cmd_otp(void) {
     uint8_t p1 = P1(apdu), p2 = P2(apdu);
     if (p1 == 0x01 || p1 == 0x03) { // Configure slot
+        if (apdu.nc < otp_config_size) {
+            return SW_WRONG_LENGTH();
+        }
         otp_config_t *odata = (otp_config_t *) apdu.data;
         if (!otp_slot_offset_valid(p1, p2)) {
             return SW_INCORRECT_P1P2();
@@ -586,6 +589,9 @@ static int cmd_otp(void) {
         uint16_t slot = (p1 == 0x01 ? EF_OTP_SLOT1 : EF_OTP_SLOT2) + p2;
         file_t *ef = file_new(slot);
         if (file_has_data(ef)) {
+            if (apdu.nc < otp_config_size + ACC_CODE_SIZE) {
+                return SW_WRONG_LENGTH();
+            }
             uint8_t current[OTP_SLOT_PLAIN_MAX] = { 0 };
             uint16_t current_len = 0;
             if (otp_slot_load(ef, current, &current_len) != PICOKEYS_OK) {
@@ -618,6 +624,9 @@ static int cmd_otp(void) {
         return otp_status(_is_otp);
     }
     else if (p1 == 0x04 || p1 == 0x05) { // Update slot
+        if (apdu.nc < otp_config_size) {
+            return SW_WRONG_LENGTH();
+        }
         otp_config_t *odata = (otp_config_t *) apdu.data;
         if (!otp_slot_offset_valid(p1, p2)) {
             return SW_INCORRECT_P1P2();
@@ -628,6 +637,9 @@ static int cmd_otp(void) {
         }
         file_t *ef = file_search(slot);
         if (file_has_data(ef)) {
+            if (apdu.nc < otp_config_size + ACC_CODE_SIZE) {
+                return SW_WRONG_LENGTH();
+            }
             uint8_t current[OTP_SLOT_PLAIN_MAX] = { 0 };
             uint16_t current_len = 0;
             if (otp_slot_load(ef, current, &current_len) != PICOKEYS_OK) {
@@ -798,6 +810,10 @@ static int cmd_otp(void) {
                 apdu.rdata = rdata_bk;
             }
             if (p1 == 0x30 || p1 == 0x38) {
+                if (apdu.nc < 64) {
+                    mbedtls_platform_zeroize(data, sizeof(data));
+                    return SW_WRONG_LENGTH();
+                }
                 if (!(otp_config->cfg_flags & CHAL_HMAC)) {
                     mbedtls_platform_zeroize(data, sizeof(data));
                     return SW_WRONG_DATA();
@@ -818,6 +834,10 @@ static int cmd_otp(void) {
                 }
             }
             else if (p1 == 0x20 || p1 == 0x28) {
+                if (apdu.nc < 6) {
+                    mbedtls_platform_zeroize(data, sizeof(data));
+                    return SW_WRONG_LENGTH();
+                }
                 if (!(otp_config->cfg_flags & CHAL_YUBICO)) {
                     mbedtls_platform_zeroize(data, sizeof(data));
                     return SW_WRONG_DATA();

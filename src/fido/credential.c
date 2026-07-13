@@ -607,7 +607,13 @@ bool credential_is_resident(const uint8_t *cred_id, size_t cred_id_len) {
     if (cred_id_len < 4 + CRED_PROTO_RESIDENT_LEN) {
         return false;
     }
-    return memcmp(cred_id + 4, CRED_PROTO_RESIDENT, CRED_PROTO_RESIDENT_LEN) == 0;
+    return memcmp(cred_id + 4, CRED_PROTO_23_S, CRED_PROTO_RESIDENT_LEN) == 0 ||
+           memcmp(cred_id + 4, CRED_PROTO_26_S, CRED_PROTO_RESIDENT_LEN) == 0;
+}
+
+bool credential_resident_id_uses_stable_keys(const uint8_t *resident_id, size_t resident_id_len) {
+    return resident_id_len == CRED_RESIDENT_LEN &&
+           memcmp(resident_id + 4, CRED_PROTO_26_S, CRED_PROTO_RESIDENT_LEN) == 0;
 }
 
 int credential_load_resident(const file_t *ef, const uint8_t *rp_id_hash, Credential *cred) {

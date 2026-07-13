@@ -64,6 +64,7 @@ typedef struct Credential {
 #define CRED_PROTO_23_S                     "\xf1\xd0\x02\x03" // Exclusive for resident credentials
 #define CRED_PROTO_RP_S                     "\xf1\xd0\x02\x04" // Exclusive for RP records magic marker
 #define CRED_PROTO_25_S                     "\xf1\xd0\x02\x05" // Contains ephemeral silent tag
+#define CRED_PROTO_26_S                     "\xf1\xd0\x02\x06" // Resident credential ID with stable key seed
 
 #define CRED_PROTO                          CRED_PROTO_25_S
 
@@ -72,7 +73,7 @@ typedef struct Credential {
 #define CRED_TAG_LEN                        16
 #define CRED_SILENT_TAG_LEN                 16
 
-#define CRED_PROTO_RESIDENT                 CRED_PROTO_23_S
+#define CRED_PROTO_RESIDENT                 CRED_PROTO_26_S
 #define CRED_PROTO_RESIDENT_LEN             4
 #define CRED_RESIDENT_HEADER_LEN            (CRED_PROTO_RESIDENT_LEN + 6)
 #define CRED_RESIDENT_LEN                   (CRED_RESIDENT_HEADER_LEN + 32)
@@ -103,6 +104,7 @@ extern int credential_derive_hmac_key(const uint8_t *cred_id, size_t cred_id_len
 extern int credential_derive_large_blob_key(const uint8_t *cred_id, size_t cred_id_len, uint8_t *outk);
 extern int credential_derive_resident(const uint8_t *cred_id, size_t cred_id_len, uint8_t *outk);
 extern bool credential_is_resident(const uint8_t *cred_id, size_t cred_id_len);
+extern bool credential_resident_id_uses_stable_keys(const uint8_t *resident_id, size_t resident_id_len);
 extern int credential_load_resident(const file_t *ef, const uint8_t *rp_id_hash, Credential *cred);
 extern int credential_rp_id_decrypt(const file_t *ef, uint8_t **rp_id, size_t *rp_id_len);
 extern int credential_migrate_rp_secure(void);

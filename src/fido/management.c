@@ -161,8 +161,14 @@ static int cmd_read_config(void) {
 }
 
 static int cmd_write_config(void) {
+    if (apdu.nc < 1) {
+        return SW_WRONG_DATA();
+    }
     if (apdu.data[0] != apdu.nc - 1) {
         return SW_WRONG_DATA();
+    }
+    if (check_user_presence() == false) {
+        return SW_CONDITIONS_NOT_SATISFIED();
     }
     file_t *ef = file_new(EF_DEV_CONF);
     file_put_data(ef, apdu.data + 1, (uint16_t)(apdu.nc - 1));

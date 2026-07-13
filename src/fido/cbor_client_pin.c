@@ -39,7 +39,23 @@ uint32_t max_usage_time_period  = 600 * 1000;
 bool needs_power_cycle = false;
 static mbedtls_ecdh_context hkey;
 static bool hkey_init = false;
+#define PIN_LEGACY_DATA_LEN 34
+#define PIN_DATA_LEN 35
 #define PIN_RETRY_COMMIT_TIMEOUT_MS 500
+
+static bool load_pin_data(const file_t *ef, uint8_t pin_data[PIN_DATA_LEN], uint16_t *pin_data_len) {
+    uint16_t len = file_get_size(ef);
+    const uint8_t *data = file_get_data(ef);
+
+    if (!data || (len != PIN_LEGACY_DATA_LEN && len != PIN_DATA_LEN)) {
+        return false;
+    }
+
+    memset(pin_data, 0, PIN_DATA_LEN);
+    memcpy(pin_data, data, len);
+    *pin_data_len = len;
+    return true;
+}
 
 static bool persist_pin_retry_counter(file_t *ef, const uint8_t *pin_data, uint16_t pin_data_len) {
     if (file_put_data(ef, pin_data, pin_data_len) != PICOKEYS_OK) {
@@ -105,18 +121,30 @@ bool getUserVerifiedFlagValue(void) {
 }
 
 static int regenerate(void) {
+    mbedtls_ecdh_context tmp;
+    mbedtls_ecdh_init(&tmp);
+
+    int ret = mbedtls_ecdh_setup(&tmp, MBEDTLS_ECP_DP_SECP256R1);
+    if (ret != 0) {
+        mbedtls_ecdh_free(&tmp);
+        return ret;
+    }
+    ret = mbedtls_ecdh_gen_public(&tmp.ctx.mbed_ecdh.grp, &tmp.ctx.mbed_ecdh.d, &tmp.ctx.mbed_ecdh.Q, random_fill_iterator, NULL);
+    if (ret != 0) {
+        mbedtls_ecdh_free(&tmp);
+        return ret;
+    }
+    ret = mbedtls_mpi_lset(&tmp.ctx.mbed_ecdh.Qp.Z, 1);
+    if (ret != 0) {
+        mbedtls_ecdh_free(&tmp);
+        return ret;
+    }
+
     if (hkey_init == true) {
         mbedtls_ecdh_free(&hkey);
     }
-
-    mbedtls_ecdh_init(&hkey);
+    hkey = tmp;
     hkey_init = true;
-    mbedtls_ecdh_setup(&hkey, MBEDTLS_ECP_DP_SECP256R1);
-    int ret = mbedtls_ecdh_gen_public(&hkey.ctx.mbed_ecdh.grp, &hkey.ctx.mbed_ecdh.d, &hkey.ctx.mbed_ecdh.Q, random_fill_iterator, NULL);
-    mbedtls_mpi_lset(&hkey.ctx.mbed_ecdh.Qp.Z, 1);
-    if (ret != 0) {
-        return ret;
-    }
     return 0;
 }
 
@@ -251,25 +279,18 @@ static int __attribute__((unused)) getPublicKey(void) {
     return 0;
 }
 
-static int __attribute__((unused)) pinUvAuthTokenUsageTimerObserver(void) {
+void pin_uv_auth_token_tick(void) {
+    uint32_t now = board_millis();
     if (usage_timer == 0) {
-        return -1;
+        return;
     }
-    if (usage_timer + max_usage_time_period > board_millis()) {
-        if (user_present_time_limit == 0 ||
-            user_present_time_limit + TRANSPORT_TIME_LIMIT < board_millis()) {
-            clearUserPresentFlag();
-        }
-        if (paut.in_use == true) {
-            if (initial_usage_time_limit == 0 ||
-                initial_usage_time_limit + TRANSPORT_TIME_LIMIT < board_millis()) {
-                stopUsingPinUvAuthToken();
-                return 1;
-            }
-        }
-        // TO DO: implement a rolling timer
+    if (paut.in_use == true && (usage_timer + max_usage_time_period <= now || initial_usage_time_limit == 0 || initial_usage_time_limit + TRANSPORT_TIME_LIMIT <= now)) {
+        stopUsingPinUvAuthToken();
+        return;
     }
-    return 0;
+    if (user_present_time_limit == 0 || user_present_time_limit + TRANSPORT_TIME_LIMIT <= now) {
+        clearUserPresentFlag();
+    }
 }
 
 static int check_keydev_encrypted(const uint8_t pin_token[32]) {
@@ -321,6 +342,17 @@ static bool pin_policy_pass(const uint8_t *pin, size_t pin_len) {
         return false;
     }
     return true;
+}
+
+static uint16_t pin_codepoint_len(const uint8_t *pin, size_t pin_len) {
+    uint16_t count = 0;
+
+    for (size_t i = 0; i < pin_len; i++) {
+        if ((pin[i] & 0xC0) != 0x80) {
+            count++;
+        }
+    }
+    return count;
 }
 
 uint8_t new_pin_mismatches = 0;
@@ -452,26 +484,27 @@ int cbor_client_pin(const uint8_t *data, size_t len) {
         if (new_pin_plain_len > 64 || paddedNewPin[63] != 0) {
             CBOR_ERROR(CTAP2_ERR_PIN_POLICY_VIOLATION);
         }
-        uint16_t pin_len = 0;
-        while (paddedNewPin[pin_len] != 0 && pin_len < sizeof(paddedNewPin)) {
-            pin_len++;
+        uint16_t pin_byte_len = 0;
+        while (pin_byte_len < sizeof(paddedNewPin) && paddedNewPin[pin_byte_len] != 0) {
+            pin_byte_len++;
         }
+        uint16_t pin_codepoints = pin_codepoint_len(paddedNewPin, pin_byte_len);
         uint8_t minPin = 4;
         file_t *ef_minpin = file_search_by_fid(EF_MINPINLEN, NULL, SPECIFY_EF);
         if (file_has_data(ef_minpin)) {
             minPin = *file_get_data(ef_minpin);
         }
-        if (pin_len < minPin) {
+        if (pin_codepoints < minPin) {
             CBOR_ERROR(CTAP2_ERR_PIN_POLICY_VIOLATION);
         }
-        if (!pin_policy_pass(paddedNewPin, pin_len)) {
+        if (!pin_policy_pass(paddedNewPin, pin_byte_len)) {
             CBOR_ERROR(CTAP2_ERR_PIN_POLICY_VIOLATION);
         }
         uint8_t hsh[35], dhash[32];
         hsh[0] = MAX_PIN_RETRIES;
-        hsh[1] = pin_len;
+        hsh[1] = pin_codepoints;
         hsh[2] = 1; // New format indicator
-        mbedtls_md(mbedtls_md_info_from_type(MBEDTLS_MD_SHA256), paddedNewPin, pin_len, dhash);
+        mbedtls_md(mbedtls_md_info_from_type(MBEDTLS_MD_SHA256), paddedNewPin, pin_byte_len, dhash);
         mbedtls_platform_zeroize(paddedNewPin, sizeof(paddedNewPin));
         pin_derive_verifier(dhash, 16, hsh + 3);
         file_put_data(ef_pin, hsh, sizeof(hsh));
@@ -484,6 +517,7 @@ int cbor_client_pin(const uint8_t *data, size_t len) {
         }
         mbedtls_platform_zeroize(hsh, sizeof(hsh));
         mbedtls_platform_zeroize(dhash, sizeof(dhash));
+        new_pin_mismatches = 0;
         needs_power_cycle = false;
 
         goto err; //No return
@@ -534,9 +568,12 @@ int cbor_client_pin(const uint8_t *data, size_t len) {
             mbedtls_platform_zeroize(sharedSecret, sizeof(sharedSecret));
             CBOR_ERROR(CTAP2_ERR_PIN_AUTH_INVALID);
         }
-        uint8_t pin_data[35];
-        uint16_t pin_data_len = file_get_size(ef_pin);
-        memcpy(pin_data, file_get_data(ef_pin), pin_data_len);
+        uint8_t pin_data[PIN_DATA_LEN];
+        uint16_t pin_data_len = 0;
+        if (!load_pin_data(ef_pin, pin_data, &pin_data_len)) {
+            mbedtls_platform_zeroize(sharedSecret, sizeof(sharedSecret));
+            CBOR_ERROR(CTAP2_ERR_PROCESSING);
+        }
         pin_data[0] -= 1;
         if (!persist_pin_retry_counter(ef_pin, pin_data, pin_data_len)) {
             mbedtls_platform_zeroize(sharedSecret, sizeof(sharedSecret));
@@ -550,7 +587,7 @@ int cbor_client_pin(const uint8_t *data, size_t len) {
             CBOR_ERROR(CTAP2_ERR_PIN_AUTH_INVALID);
         }
         uint8_t dhash[32], off = 3;
-        if (file_get_size(ef_pin) == 34) {
+        if (pin_data_len == PIN_LEGACY_DATA_LEN) {
             off = 2;
             double_hash_pin(paddedNewPin, 16, dhash);
         }
@@ -558,7 +595,7 @@ int cbor_client_pin(const uint8_t *data, size_t len) {
             pin_derive_verifier(paddedNewPin, 16, dhash);
         }
 
-        if (mbedtls_ct_memcmp(dhash, file_get_data(ef_pin) + off, 32) != 0) {
+        if (mbedtls_ct_memcmp(dhash, pin_data + off, 32) != 0) {
             regenerate();
             mbedtls_platform_zeroize(sharedSecret, sizeof(sharedSecret));
             if (retries == 0) {
@@ -607,19 +644,20 @@ int cbor_client_pin(const uint8_t *data, size_t len) {
         if (new_pin_plain_len > 64 || paddedNewPin[63] != 0) {
             CBOR_ERROR(CTAP2_ERR_PIN_POLICY_VIOLATION);
         }
-        uint16_t pin_len = 0;
-        while (paddedNewPin[pin_len] != 0 && pin_len < sizeof(paddedNewPin)) {
-            pin_len++;
+        uint16_t pin_byte_len = 0;
+        while (pin_byte_len < sizeof(paddedNewPin) && paddedNewPin[pin_byte_len] != 0) {
+            pin_byte_len++;
         }
+        uint16_t pin_codepoints = pin_codepoint_len(paddedNewPin, pin_byte_len);
         uint8_t minPin = 4;
         file_t *ef_minpin = file_search_by_fid(EF_MINPINLEN, NULL, SPECIFY_EF);
         if (file_has_data(ef_minpin)) {
             minPin = *file_get_data(ef_minpin);
         }
-        if (pin_len < minPin) {
+        if (pin_codepoints < minPin) {
             CBOR_ERROR(CTAP2_ERR_PIN_POLICY_VIOLATION);
         }
-        if (!pin_policy_pass(paddedNewPin, pin_len)) {
+        if (!pin_policy_pass(paddedNewPin, pin_byte_len)) {
             CBOR_ERROR(CTAP2_ERR_PIN_POLICY_VIOLATION);
         }
 
@@ -630,7 +668,7 @@ int cbor_client_pin(const uint8_t *data, size_t len) {
         }
         encrypt_keydev_f1(keydev);
 
-        mbedtls_md(mbedtls_md_info_from_type(MBEDTLS_MD_SHA256), paddedNewPin, pin_len, dhash);
+        mbedtls_md(mbedtls_md_info_from_type(MBEDTLS_MD_SHA256), paddedNewPin, pin_byte_len, dhash);
         pin_derive_session(dhash, 16, session_pin);
         ret = check_keydev_encrypted(session_pin);
         if (ret != PICOKEYS_OK) {
@@ -639,7 +677,7 @@ int cbor_client_pin(const uint8_t *data, size_t len) {
         flash_commit();
 
         pin_data[0] = MAX_PIN_RETRIES;
-        pin_data[1] = pin_len;
+        pin_data[1] = pin_codepoints;
         pin_data[2] = 1; // New format indicator
         pin_derive_verifier(dhash, 16, pin_data + 3);
 
@@ -706,9 +744,12 @@ int cbor_client_pin(const uint8_t *data, size_t len) {
             mbedtls_platform_zeroize(sharedSecret, sizeof(sharedSecret));
             CBOR_ERROR(CTAP1_ERR_INVALID_PARAMETER);
         }
-        uint8_t pin_data[35];
-        uint16_t pin_data_len = file_get_size(ef_pin);
-        memcpy(pin_data, file_get_data(ef_pin), pin_data_len);
+        uint8_t pin_data[PIN_DATA_LEN];
+        uint16_t pin_data_len = 0;
+        if (!load_pin_data(ef_pin, pin_data, &pin_data_len)) {
+            mbedtls_platform_zeroize(sharedSecret, sizeof(sharedSecret));
+            CBOR_ERROR(CTAP2_ERR_PROCESSING);
+        }
         pin_data[0] -= 1;
         if (!persist_pin_retry_counter(ef_pin, pin_data, pin_data_len)) {
             mbedtls_platform_zeroize(sharedSecret, sizeof(sharedSecret));
@@ -722,14 +763,14 @@ int cbor_client_pin(const uint8_t *data, size_t len) {
             CBOR_ERROR(CTAP2_ERR_PIN_AUTH_INVALID);
         }
         uint8_t dhash[32], off = 3;
-        if (file_get_size(ef_pin) == 34) {
+        if (pin_data_len == PIN_LEGACY_DATA_LEN) {
             off = 2;
             double_hash_pin(paddedNewPin, 16, dhash);
         }
         else {
             pin_derive_verifier(paddedNewPin, 16, dhash);
         }
-        if (mbedtls_ct_memcmp(dhash, file_get_data(ef_pin) + off, 32) != 0) {
+        if (mbedtls_ct_memcmp(dhash, pin_data + off, 32) != 0) {
             regenerate();
             mbedtls_platform_zeroize(sharedSecret, sizeof(sharedSecret));
             mbedtls_platform_zeroize(dhash, sizeof(dhash));

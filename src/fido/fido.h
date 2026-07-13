@@ -122,6 +122,7 @@ extern const known_app_t *find_app_by_rp_id_hash(const uint8_t *rp_id_hash);
 #define TRANSPORT_TIME_LIMIT (30 * 1000) //USB
 
 bool check_user_presence(void);
+void fido_led_3_blinks(void);
 int fido_process_apdu(void);
 int cmd_register(void);
 int cmd_authenticate(void);

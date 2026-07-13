@@ -44,6 +44,19 @@ int cmd_authenticate(void) {
     uint8_t *tmp_kh = (uint8_t *) calloc(1, req->keyHandleLen);
     memcpy(tmp_kh, req->keyHandle, req->keyHandleLen);
     if (credential_verify(tmp_kh, req->keyHandleLen, req->appId, false) == 0) {
+        Credential cred;
+        if (credential_load(req->keyHandle, req->keyHandleLen, req->appId, &cred) != 0) {
+            mbedtls_ecp_keypair_free(&key);
+            free(tmp_kh);
+            return SW_INCORRECT_PARAMS();
+        }
+        if (cred.extensions.credProtect == CRED_PROT_UV_REQUIRED) {
+            credential_free(&cred);
+            mbedtls_ecp_keypair_free(&key);
+            free(tmp_kh);
+            return SW_SECURITY_STATUS_NOT_SATISFIED();
+        }
+        credential_free(&cred);
         ret = fido_load_key(FIDO2_CURVE_P256, req->keyHandle, &key);
     }
     else {

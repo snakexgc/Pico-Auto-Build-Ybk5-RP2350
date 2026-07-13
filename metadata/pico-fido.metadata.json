@@ -30,7 +30,8 @@
     "secp256r1_ecdsa_sha256_raw",
     "ed25519_eddsa_sha512_raw",
     "secp384r1_ecdsa_sha384_raw",
-    "secp521r1_ecdsa_sha512_raw"
+    "secp521r1_ecdsa_sha512_raw",
+    "secp256k1_ecdsa_sha256_raw"
   ],
   "publicKeyAlgAndEncodings": [
     "cose"
@@ -119,6 +120,10 @@
       },
       {
         "alg": -36,
+        "type": "public-key"
+      },
+      {
+        "alg": -47,
         "type": "public-key"
       }
     ],

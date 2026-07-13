@@ -35,6 +35,9 @@ extern bool has_keydev_dec;
 mse_t mse = { .init = false };
 
 int mse_decrypt_ct(uint8_t *data, size_t len) {
+    if (data == NULL || len < 16) {
+        return -1;
+    }
     mbedtls_chachapoly_context chatx;
     mbedtls_chachapoly_init(&chatx);
     mbedtls_chachapoly_setkey(&chatx, mse.key_enc + 12);
@@ -112,6 +115,9 @@ static int cbor_vendor_generic(uint8_t cmd, const uint8_t *data, size_t len) {
             if (vendorParam.present == false) {
                 CBOR_ERROR(CTAP2_ERR_MISSING_PARAMETER);
             }
+            if (check_user_presence() == false) {
+                CBOR_ERROR(CTAP2_ERR_OPERATION_DENIED);
+            }
             uint8_t zeros[32];
             memset(zeros, 0, sizeof(zeros));
             file_put_data(ef_keydev_enc, vendorParam.data, (uint16_t)vendorParam.len);
@@ -178,6 +184,9 @@ static int cbor_vendor_generic(uint8_t cmd, const uint8_t *data, size_t len) {
     else if (cmd == CTAP_VENDOR_UNLOCK) {
         if (mse.init == false) {
             CBOR_ERROR(CTAP2_ERR_NOT_ALLOWED);
+        }
+        if (vendorParam.present == false || vendorParam.len != sizeof(keydev_dec) + 16) {
+            CBOR_ERROR(CTAP1_ERR_INVALID_PARAMETER);
         }
 
         mbedtls_chachapoly_context chatx;

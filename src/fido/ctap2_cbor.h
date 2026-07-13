@@ -29,6 +29,7 @@ extern int cbor_get_info(void);
 extern int cbor_reset(void);
 extern int cbor_make_credential(const uint8_t *data, size_t len);
 extern int cbor_client_pin(const uint8_t *data, size_t len);
+extern void pin_uv_auth_token_tick(void);
 extern int cbor_selection(void);
 extern int cbor_get_next_assertion(const uint8_t *data, size_t len);
 extern int cbor_cred_mgmt(const uint8_t *data, size_t len);

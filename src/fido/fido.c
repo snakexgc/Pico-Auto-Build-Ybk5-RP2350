@@ -16,7 +16,9 @@
  */
 
 #include "picokeys.h"
+#include "button.h"
 #include "fido.h"
+#include "led/led.h"
 #include "serial.h"
 #include "apdu.h"
 #include "ctap.h"
@@ -532,12 +534,24 @@ uint32_t user_present_time_limit = 0;
 
 bool check_user_presence(void) {
     if (user_present_time_limit == 0 || user_present_time_limit + TRANSPORT_TIME_LIMIT < board_millis()) {
-        if (wait_button_pressed() > 0) { //timeout
+        bool previous_force_button_wait = force_button_wait;
+#ifdef FORCE_BUTTON_WAIT
+        force_button_wait = true;
+#endif
+        int ret = wait_button_pressed();
+        force_button_wait = previous_force_button_wait;
+        if (ret > 0) {
             return false;
         }
         //user_present_time_limit = board_millis();
     }
     return true;
+}
+
+void fido_led_3_blinks(void) {
+#ifndef ENABLE_EMULATION
+    led_blink_n_times(3, LED_COLOR_GREEN, 100, 100);
+#endif
 }
 
 uint32_t get_sign_counter(void) {

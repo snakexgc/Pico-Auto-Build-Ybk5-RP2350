@@ -38,6 +38,7 @@
 #define OTP_PIN_LEGACY_SIZE 33
 #define OTP_PIN_V1_SIZE 34
 #define OTP_PIN_RETRY_COMMIT_TIMEOUT_MS 500
+#define OATH_ACCESS_CODE_MAX_LEN 65
 #define OATH_CRED_BITMAP_SIZE ((MAX_OATH_CRED + 7) / 8)
 #define OATH_SECURE_KEY_VERSION 1
 #define OATH_SECURE_KEY_OVERHEAD (sizeof(oath_secure_key_magic) + 1 + 12 + 16)
@@ -83,6 +84,21 @@ static bool validated = true;
 static bool oath_migration_done = false;
 static uint8_t challenge[CHALLENGE_LEN] = { 0 };
 static const uint8_t oath_secure_key_magic[] = { 'O', 'A', 'T', 'H' };
+
+static bool oath_response_has_room(size_t len) {
+    return res_APDU_size <= USB_BUFFER_SIZE && len <= (size_t)(USB_BUFFER_SIZE - res_APDU_size);
+}
+
+static bool oath_response_append(uint8_t tag, const uint8_t *data, size_t len) {
+    if (len > UINT8_MAX || !oath_response_has_room(len + 2)) {
+        return false;
+    }
+    res_APDU[res_APDU_size++] = tag;
+    res_APDU[res_APDU_size++] = (uint8_t)len;
+    memcpy(res_APDU + res_APDU_size, data, len);
+    res_APDU_size += len;
+    return true;
+}
 
 typedef struct {
     file_t **files;
@@ -437,24 +453,42 @@ static int cmd_put(void) {
     if (tlv_find_tag(&ctxi, TAG_NAME, &name) == false) {
         return SW_INCORRECT_PARAMS();
     }
+    uint8_t *put_data = apdu.data;
+    size_t put_len = apdu.nc;
+    uint8_t *put_copy = NULL;
     if ((key.data[0] & OATH_TYPE_MASK) == OATH_TYPE_HOTP) {
+        if (apdu.nc > UINT16_MAX - 10) {
+            return SW_WRONG_LENGTH();
+        }
+        put_copy = calloc(1, apdu.nc + 10);
+        if (put_copy == NULL) {
+            return SW_EXEC_ERROR();
+        }
+        memcpy(put_copy, apdu.data, apdu.nc);
+        put_data = put_copy;
+        tlv_ctx_init(put_data, (uint16_t)put_len, &ctxi);
         if (tlv_find_tag(&ctxi, TAG_IMF, &imf) == false) {
-            memcpy(apdu.data + apdu.nc, "\x7a\x08\x00\x00\x00\x00\x00\x00\x00\x00", 10);
-            apdu.nc += 10;
+            memcpy(put_data + put_len, "\x7a\x08\x00\x00\x00\x00\x00\x00\x00\x00", 10);
+            put_len += 10;
         }
         else { //prepend zero-valued bytes
             if (imf.len < 8) {
-                memmove(imf.data + (8 - imf.len), imf.data, imf.len);
-                memset(imf.data, 0, 8 - imf.len);
+                size_t extra = 8 - imf.len;
+                size_t value_offset = (size_t)(imf.data - put_data);
+                memmove(put_data + value_offset + extra, put_data + value_offset, put_len - value_offset);
+                memset(put_data + value_offset, 0, extra);
                 *(imf.data - 1) = 8;
-                apdu.nc += (8 - imf.len);
+                put_len += extra;
             }
-
         }
     }
     file_t *ef = find_oath_cred(name.data, name.len);
     if (file_has_data(ef)) {
-        int ret = oath_put_credential_data(ef, apdu.data, (uint16_t)apdu.nc);
+        int ret = oath_put_credential_data(ef, put_data, (uint16_t)put_len);
+        if (put_copy != NULL) {
+            mbedtls_platform_zeroize(put_copy, put_len);
+        }
+        free(put_copy);
         if (ret != PICOKEYS_OK) {
             return SW_EXEC_ERROR();
         }
@@ -472,9 +506,17 @@ static int cmd_put(void) {
             if ((used[i / 8] & (1u << (i % 8))) == 0) {
                 file_t *tef = file_new((uint16_t)(EF_OATH_CRED + i));
                 if (!tef) {
+                    if (put_copy != NULL) {
+                        mbedtls_platform_zeroize(put_copy, put_len);
+                    }
+                    free(put_copy);
                     return SW_FILE_FULL();
                 }
-                int ret = oath_put_credential_data(tef, apdu.data, (uint16_t)apdu.nc);
+                int ret = oath_put_credential_data(tef, put_data, (uint16_t)put_len);
+                if (put_copy != NULL) {
+                    mbedtls_platform_zeroize(put_copy, put_len);
+                }
+                free(put_copy);
                 if (ret != PICOKEYS_OK) {
                     return SW_EXEC_ERROR();
                 }
@@ -482,6 +524,10 @@ static int cmd_put(void) {
                 return SW_OK();
             }
         }
+        if (put_copy != NULL) {
+            mbedtls_platform_zeroize(put_copy, put_len);
+        }
+        free(put_copy);
         return SW_FILE_FULL();
     }
     return SW_OK();
@@ -532,7 +578,7 @@ static int cmd_set_code(void) {
     if (tlv_find_tag(&ctxi, TAG_KEY, &key) == false) {
         return SW_INCORRECT_PARAMS();
     }
-    if (key.len == 1) {
+    if (key.len == 1 || key.len > OATH_ACCESS_CODE_MAX_LEN) {
         return SW_WRONG_DATA();
     }
     if (key.len == 0) {
@@ -555,6 +601,9 @@ static int cmd_set_code(void) {
     int r = mbedtls_md_hmac(md_info, key.data + 1, key.len - 1, chal.data, chal.len, hmac);
     if (r != 0) {
         return SW_EXEC_ERROR();
+    }
+    if (resp.len != mbedtls_md_get_size(md_info)) {
+        return SW_DATA_INVALID();
     }
     if (mbedtls_ct_memcmp(hmac, resp.data, resp.len) != 0) {
         return SW_DATA_INVALID();
@@ -610,6 +659,12 @@ static int cmd_list(void) {
                     }
                     continue;
                 }
+                if (name.len > UINT8_MAX - 1 - (ext ? 1 : 0) ||
+                    !oath_response_has_room(3 + name.len + (ext ? 1 : 0))) {
+                    mbedtls_platform_zeroize(plain_key, plain_key_len);
+                    free(plain_key);
+                    return SW_WRONG_LENGTH();
+                }
                 res_APDU[res_APDU_size++] = TAG_NAME_LIST;
                 res_APDU[res_APDU_size++] = (uint8_t)(name.len + 1 + (ext ? 1 : 0));
                 res_APDU[res_APDU_size++] = plain_key[0];
@@ -619,7 +674,7 @@ static int cmd_list(void) {
                     if (tlv_find_tag(&ctxi, TAG_PWS_LOGIN, &pws) == true || tlv_find_tag(&ctxi, TAG_PWS_PASSWORD, &pws) == true || tlv_find_tag(&ctxi, TAG_PWS_METADATA, &pws) == true) {
                         props |= 0x4;
                     }
-                    if (tlv_find_tag(&ctxi, TAG_PROPERTY, &pws) == true && (pws.data[0] & PROP_TOUCH)) {
+                    if (tlv_find_tag(&ctxi, TAG_PROPERTY, &pws) == true && pws.len > 0 && (pws.data[0] & PROP_TOUCH)) {
                         props |= 0x1;
                     }
                     res_APDU[res_APDU_size++] = props;
@@ -654,7 +709,7 @@ static int cmd_validate(void) {
     }
     key.data = plain_key;
     key.len = plain_key_len;
-    if (plain_key_len < 2) {
+    if (plain_key_len < 2 || plain_key_len > OATH_ACCESS_CODE_MAX_LEN) {
         mbedtls_platform_zeroize(plain_key, plain_key_len);
         free(plain_key);
         return SW_WRONG_DATA();
@@ -671,6 +726,11 @@ static int cmd_validate(void) {
         mbedtls_platform_zeroize(key.data, key.len);
         free(key.data);
         return SW_EXEC_ERROR();
+    }
+    if (resp.len != mbedtls_md_get_size(md_info)) {
+        mbedtls_platform_zeroize(key.data, key.len);
+        free(key.data);
+        return SW_DATA_INVALID();
     }
     if (mbedtls_ct_memcmp(hmac, resp.data, resp.len) != 0) {
         mbedtls_platform_zeroize(key.data, key.len);
@@ -709,6 +769,9 @@ int calculate_oath(uint8_t truncate, const uint8_t *key, size_t key_len, const u
         return PICOKEYS_EXEC_ERROR;
     }
     if (truncate == 0x01) {
+        if (!oath_response_has_room(7)) {
+            return PICOKEYS_WRONG_LENGTH;
+        }
         res_APDU[res_APDU_size++] = 4 + 1;
         res_APDU[res_APDU_size++] = key[1];
         uint8_t offset = hmac[hmac_size - 1] & 0x0f;
@@ -718,6 +781,9 @@ int calculate_oath(uint8_t truncate, const uint8_t *key, size_t key_len, const u
         res_APDU[res_APDU_size++] = hmac[offset + 3];
     }
     else {
+        if (!oath_response_has_room(hmac_size + 2)) {
+            return PICOKEYS_WRONG_LENGTH;
+        }
         res_APDU[res_APDU_size++] = (uint8_t)(hmac_size + 1);
         res_APDU[res_APDU_size++] = key[1];
         memcpy(res_APDU + res_APDU_size, hmac, hmac_size); res_APDU_size += (uint16_t)hmac_size;
@@ -770,6 +836,11 @@ static int cmd_calculate(void) {
         }
     }
 
+    if (!oath_response_has_room(1)) {
+        mbedtls_platform_zeroize(plain_key, plain_key_len);
+        free(plain_key);
+        return SW_WRONG_LENGTH();
+    }
     res_APDU[res_APDU_size++] = TAG_RESPONSE + P2(apdu);
 
     bool is_hotp = (key.data[0] & OATH_TYPE_MASK) == OATH_TYPE_HOTP;
@@ -824,6 +895,9 @@ static int cmd_calculate_all(void) {
             if (tlv_find_tag(&ctxe, TAG_NAME, &name) == false || tlv_find_tag(&ctxe, TAG_KEY, &key) == false) {
                 continue;
             }
+            if (name.len > UINT8_MAX) {
+                return SW_WRONG_LENGTH();
+            }
             uint8_t *plain_key = NULL;
             uint16_t plain_key_len = 0;
             if (oath_decrypt_key(key.data, key.len, &plain_key, &plain_key_len) != PICOKEYS_OK || plain_key_len < 2) {
@@ -835,15 +909,23 @@ static int cmd_calculate_all(void) {
             }
             key.data = plain_key;
             key.len = plain_key_len;
+            bool is_hotp = (key.data[0] & OATH_TYPE_MASK) == OATH_TYPE_HOTP;
+            bool touch_required = tlv_find_tag(&ctxe, TAG_PROPERTY, &prop) == true && prop.len > 0 && (prop.data[0] & PROP_TOUCH);
+            size_t response_len = is_hotp || touch_required ? 3 : 8;
+            if (!oath_response_has_room(2 + name.len + response_len)) {
+                mbedtls_platform_zeroize(plain_key, plain_key_len);
+                free(plain_key);
+                return SW_WRONG_LENGTH();
+            }
             res_APDU[res_APDU_size++] = TAG_NAME;
             res_APDU[res_APDU_size++] = (uint8_t)name.len;
             memcpy(res_APDU + res_APDU_size, name.data, name.len); res_APDU_size += name.len;
-            if ((key.data[0] & OATH_TYPE_MASK) == OATH_TYPE_HOTP) {
+            if (is_hotp) {
                 res_APDU[res_APDU_size++] = TAG_NO_RESPONSE;
                 res_APDU[res_APDU_size++] = 1;
                 res_APDU[res_APDU_size++] = key.data[1];
             }
-            else if (tlv_find_tag(&ctxe, TAG_PROPERTY, &prop) == true && (prop.data[0] & PROP_TOUCH)) {
+            else if (touch_required) {
                 res_APDU[res_APDU_size++] = TAG_TOUCH_RESPONSE;
                 res_APDU[res_APDU_size++] = 1;
                 res_APDU[res_APDU_size++] = key.data[1];
@@ -1013,13 +1095,13 @@ static int cmd_verify_hotp(void) {
     if (validated == false) {
         return SW_SECURITY_STATUS_NOT_SATISFIED();
     }
-    tlv_ctx_t ctxi, key = { 0 }, chal = { 0 }, name = { 0 }, code = { 0 };
+    tlv_ctx_t ctxi, key = { 0 }, chal = { 0 }, name = { 0 }, code = { 0 }, prop = { 0 };
     tlv_ctx_init(apdu.data, (uint16_t)apdu.nc, &ctxi);
     uint32_t code_int = 0;
     if (tlv_find_tag(&ctxi, TAG_NAME, &name) == false) {
         return SW_INCORRECT_PARAMS();
     }
-    file_t *ef = file_search_by_fid(EF_OATH_CRED, NULL, SPECIFY_EF);
+    file_t *ef = find_oath_cred(name.data, name.len);
     if (file_has_data(ef) == false) {
         return SW_DATA_INVALID();
     }
@@ -1050,9 +1132,17 @@ static int cmd_verify_hotp(void) {
         free(plain_key);
         return SW_INCORRECT_PARAMS();
     }
-    if (tlv_find_tag(&ctxi, TAG_RESPONSE, &code) == true) {
-        code_int = get_uint32_be(code.data);
+    if (tlv_find_tag(&ctxe, TAG_PROPERTY, &prop) == true && prop.len > 0 && (prop.data[0] & PROP_TOUCH)) {
+        mbedtls_platform_zeroize(plain_key, plain_key_len);
+        free(plain_key);
+        return SW_CONDITIONS_NOT_SATISFIED();
     }
+    if (tlv_find_tag(&ctxi, TAG_RESPONSE, &code) == false || code.len != sizeof(uint32_t)) {
+        mbedtls_platform_zeroize(plain_key, plain_key_len);
+        free(plain_key);
+        return SW_INCORRECT_PARAMS();
+    }
+    code_int = get_uint32_be(code.data);
 
     int ret = calculate_oath(0x01, key.data, key.len, chal.data, chal.len);
     if (ret != PICOKEYS_OK) {
@@ -1121,6 +1211,9 @@ static int cmd_rename(void) {
 
 static int cmd_get_credential(void) {
     tlv_ctx_t ctxi, name = { 0 };
+    if (validated == false) {
+        return SW_SECURITY_STATUS_NOT_SATISFIED();
+    }
     if (apdu.nc < 3) {
         return SW_INCORRECT_PARAMS();
     }
@@ -1137,30 +1230,12 @@ static int cmd_get_credential(void) {
     }
     tlv_ctx_t login = { 0 }, pw = { 0 }, meta = { 0 }, prop = { 0 };
     tlv_ctx_init(file_get_data(ef), file_get_size(ef), &ctxi);
-    if (tlv_find_tag(&ctxi, TAG_NAME, &name) == true) {
-        res_APDU[res_APDU_size++] = TAG_NAME;
-        res_APDU[res_APDU_size++] = (uint8_t)(name.len);
-        memcpy(res_APDU + res_APDU_size, name.data, name.len); res_APDU_size += name.len;
-    }
-    if (tlv_find_tag(&ctxi, TAG_PWS_LOGIN, &login) == true) {
-        res_APDU[res_APDU_size++] = TAG_PWS_LOGIN;
-        res_APDU[res_APDU_size++] = (uint8_t)(login.len);
-        memcpy(res_APDU + res_APDU_size, login.data, login.len); res_APDU_size += login.len;
-    }
-    if (tlv_find_tag(&ctxi, TAG_PWS_PASSWORD, &pw) == true) {
-        res_APDU[res_APDU_size++] = TAG_PWS_PASSWORD;
-        res_APDU[res_APDU_size++] = (uint8_t)(pw.len);
-        memcpy(res_APDU + res_APDU_size, pw.data, pw.len); res_APDU_size += pw.len;
-    }
-    if (tlv_find_tag(&ctxi, TAG_PWS_METADATA, &meta) == true) {
-        res_APDU[res_APDU_size++] = TAG_PWS_METADATA;
-        res_APDU[res_APDU_size++] = (uint8_t)(meta.len);
-        memcpy(res_APDU + res_APDU_size, meta.data, meta.len); res_APDU_size += meta.len;
-    }
-    if (tlv_find_tag(&ctxi, TAG_PROPERTY, &prop) == true) {
-        res_APDU[res_APDU_size++] = TAG_PROPERTY;
-        res_APDU[res_APDU_size++] = (uint8_t)(prop.len);
-        memcpy(res_APDU + res_APDU_size, prop.data, prop.len); res_APDU_size += prop.len;
+    if ((tlv_find_tag(&ctxi, TAG_NAME, &name) == true && !oath_response_append(TAG_NAME, name.data, name.len)) ||
+        (tlv_find_tag(&ctxi, TAG_PWS_LOGIN, &login) == true && !oath_response_append(TAG_PWS_LOGIN, login.data, login.len)) ||
+        (tlv_find_tag(&ctxi, TAG_PWS_PASSWORD, &pw) == true && !oath_response_append(TAG_PWS_PASSWORD, pw.data, pw.len)) ||
+        (tlv_find_tag(&ctxi, TAG_PWS_METADATA, &meta) == true && !oath_response_append(TAG_PWS_METADATA, meta.data, meta.len)) ||
+        (tlv_find_tag(&ctxi, TAG_PROPERTY, &prop) == true && !oath_response_append(TAG_PROPERTY, prop.data, prop.len))) {
+        return SW_WRONG_LENGTH();
     }
     apdu.ne = res_APDU_size;
     return SW_OK();
