@@ -26,7 +26,7 @@ RUN apt install -y libccid \
     tpm2-tools \
     swtpm \
     && rm -rf /var/lib/apt/lists/*
-RUN pip3 install pytest pycvc cryptography inputimeout fido2==2.0.0 --break-system-packages
+RUN pip3 install pytest pycvc cryptography inputimeout fido2==2.2.1 --break-system-packages
 WORKDIR /
 RUN git clone https://github.com/frankmorgner/vsmartcard.git
 WORKDIR /vsmartcard/virtualsmartcard

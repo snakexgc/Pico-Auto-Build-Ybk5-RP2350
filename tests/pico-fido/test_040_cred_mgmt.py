@@ -18,6 +18,7 @@
 """
 
 
+import os
 import pytest
 import time
 import random
@@ -119,6 +120,45 @@ def test_get_info(info):
     assert info[0x7] > 1
     assert 0x8 in info
     assert info[0x8] > 1
+
+
+def test_credential_management_reports_third_party_payment(device):
+    device.reset()
+    ClientPin(device.client()._backend.ctap2).set_pin(PIN)
+    client_data_hash = os.urandom(32)
+    pin_token = ClientPin(device.client()._backend.ctap2).get_pin_token(
+        PIN, permissions=ClientPin.PERMISSION.MAKE_CREDENTIAL
+    )
+    protocol = PinProtocolV2()
+    registration = device.MC(
+        client_data_hash=client_data_hash,
+        options={"rk": True},
+        extensions={"thirdPartyPayment": True},
+        pin_uv_protocol=protocol.VERSION,
+        pin_uv_param=protocol.authenticate(pin_token, client_data_hash),
+    )
+    registration = registration["res"]
+    assert registration.auth_data.extensions["thirdPartyPayment"] is True
+
+    credentials = CredMgmt(device).enumerate_creds(registration.auth_data.rp_id_hash)
+    assert len(credentials) == 1
+    assert credentials[0][CredentialManagement.RESULT.THIRD_PARTY_PAYMENT] is True
+
+    assertion_hash = os.urandom(32)
+    assertion_token = ClientPin(device.client()._backend.ctap2).get_pin_token(
+        PIN, permissions=ClientPin.PERMISSION.GET_ASSERTION
+    )
+    assertion = device.GA(
+        client_data_hash=assertion_hash,
+        allow_list=[{
+            "id": registration.auth_data.credential_data.credential_id,
+            "type": "public-key",
+        }],
+        extensions={"thirdPartyPayment": True},
+        pin_uv_protocol=protocol.VERSION,
+        pin_uv_param=protocol.authenticate(assertion_token, assertion_hash),
+    )["res"]
+    assert assertion.auth_data.extensions["thirdPartyPayment"] is True
 
 def test_get_metadata_ok(MC_RK_Res, device):
     metadata = CredMgmt(device).get_metadata()

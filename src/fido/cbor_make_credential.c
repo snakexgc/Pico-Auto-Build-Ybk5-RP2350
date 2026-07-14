@@ -516,6 +516,9 @@ int cbor_make_credential(const uint8_t *data, size_t len) {
         if (extensions.credBlob.present == true) {
             l++;
         }
+        if (extensions.thirdPartyPayment == ptrue) {
+            l++;
+        }
         if (hmac_secret_mc) {
             l++;
         }
@@ -556,6 +559,10 @@ int cbor_make_credential(const uint8_t *data, size_t len) {
             if (minPinLen > 0) {
                 CBOR_CHECK(cbor_encode_text_stringz(&mapEncoder, "minPinLength"));
                 CBOR_CHECK(cbor_encode_uint(&mapEncoder, minPinLen));
+            }
+            if (extensions.thirdPartyPayment == ptrue) {
+                CBOR_CHECK(cbor_encode_text_stringz(&mapEncoder, "thirdPartyPayment"));
+                CBOR_CHECK(cbor_encode_boolean(&mapEncoder, true));
             }
             if (hmac_secret_mc) {
                 CBOR_CHECK(cbor_encode_text_stringz(&mapEncoder, "hmac-secret-mc"));
