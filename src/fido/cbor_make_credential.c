@@ -32,14 +32,22 @@ char *rp_id = NULL, *user_name = NULL, *display_name = NULL;
 
 static bool minpin_contains_rp(const uint8_t *rp_id_hash) {
     file_t *ef_minpin = file_search_by_fid(EF_MINPINLEN, NULL, SPECIFY_EF);
-    if (file_has_data(ef_minpin)) {
-        uint8_t *minpin_data = file_get_data(ef_minpin);
-        for (int o = 2; o < file_get_size(ef_minpin); o += 32) {
-            if (memcmp(minpin_data + o, rp_id_hash, 32) == 0) {
-                return true;
-            }
+    if (!file_has_data(ef_minpin)) {
+        return false;
+    }
+
+    uint32_t minpin_size = file_get_size(ef_minpin);
+    if (minpin_size < 2 + SHA256_DIGEST_LENGTH) {
+        return false;
+    }
+
+    uint8_t *minpin_data = file_get_data(ef_minpin);
+    for (uint32_t offset = 2; offset <= minpin_size - SHA256_DIGEST_LENGTH; offset += SHA256_DIGEST_LENGTH) {
+        if (memcmp(minpin_data + offset, rp_id_hash, SHA256_DIGEST_LENGTH) == 0) {
+            return true;
         }
     }
+
     return false;
 }
 
