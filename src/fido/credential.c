@@ -19,6 +19,7 @@
 #include "serial.h"
 #include "pico_time.h"
 #include "mbedtls/chachapoly.h"
+#include "mbedtls/constant_time.h"
 #include "mbedtls/sha256.h"
 #include "credential.h"
 #if defined(PICO_PLATFORM)
@@ -30,6 +31,7 @@
 #include "random.h"
 #include "files.h"
 #include "otp.h"
+#include "resident_container.h"
 
 int credential_derive_chacha_key(uint8_t *outk, const uint8_t *);
 
@@ -438,11 +440,16 @@ void credential_free(Credential *cred) {
     }
 }
 
-int credential_store(const uint8_t *cred_id, size_t cred_id_len, const uint8_t *rp_id_hash) {
+int credential_store(const uint8_t *cred_id, size_t cred_id_len, const uint8_t *rp_id_hash, const uint8_t *public_key, size_t public_key_len) {
     int sloti = -1;
     Credential cred = { 0 };
     int ret = 0;
     bool new_record = true;
+    bool use_container = true;
+
+    if (!cred_id || !rp_id_hash || !public_key || public_key_len == 0) {
+        return -1;
+    }
     ret = credential_load(cred_id, cred_id_len, rp_id_hash, &cred);
     if (ret != 0) {
         credential_free(&cred);
@@ -452,15 +459,15 @@ int credential_store(const uint8_t *cred_id, size_t cred_id_len, const uint8_t *
         file_t *ef = file_search(EF_CRED + i);
         Credential rcred = { 0 };
         if (!file_has_data(ef)) {
-            if (sloti == -1) {
+            if (sloti == -1 && resident_container_can_create((uint8_t)i)) {
                 sloti = i;
             }
             continue;
         }
-        if (memcmp(file_get_data(ef), rp_id_hash, 32) != 0) {
+        if (!credential_resident_matches_rp(ef, rp_id_hash)) {
             continue;
         }
-        ret = credential_load(file_get_data(ef) + 32 + CRED_RESIDENT_LEN, file_get_size(ef) - 32 - CRED_RESIDENT_LEN, rp_id_hash, &rcred);
+        ret = credential_load_resident(ef, rp_id_hash, &rcred);
         if (ret != 0) {
             credential_free(&rcred);
             continue;
@@ -469,22 +476,43 @@ int credential_store(const uint8_t *cred_id, size_t cred_id_len, const uint8_t *
             sloti = i;
             credential_free(&rcred);
             new_record = false;
+            use_container = resident_container_is_marker(ef);
             break;
         }
         credential_free(&rcred);
     }
     if (sloti == -1) {
+        credential_free(&cred);
         return -1;
     }
     uint8_t cred_idr[CRED_RESIDENT_LEN] = {0};
-    credential_derive_resident(cred_id, cred_id_len, cred_idr);
-    uint8_t *data = (uint8_t *) calloc(1, cred_id_len + 32 + CRED_RESIDENT_LEN);
-    memcpy(data, rp_id_hash, 32);
-    memcpy(data + 32, cred_idr, CRED_RESIDENT_LEN);
-    memcpy(data + 32 + CRED_RESIDENT_LEN, cred_id, cred_id_len);
-    file_t *ef = file_new((uint16_t)(EF_CRED + sloti));
-    file_put_data(ef, data, (uint16_t)cred_id_len + 32 + CRED_RESIDENT_LEN);
-    free(data);
+    ret = credential_derive_resident(cred_id, cred_id_len, cred_idr);
+    if (ret != 0) {
+        credential_free(&cred);
+        return ret;
+    }
+    uint8_t *data = NULL;
+    file_t *ef = NULL;
+    if (use_container) {
+        ret = resident_container_create((uint8_t)sloti, rp_id_hash, cred_idr, sizeof(cred_idr), cred_id, cred_id_len, public_key, public_key_len);
+    }
+    else {
+        data = (uint8_t *)calloc(1, cred_id_len + 32 + CRED_RESIDENT_LEN);
+        if (!data) {
+            credential_free(&cred);
+            return -1;
+        }
+        memcpy(data, rp_id_hash, 32);
+        memcpy(data + 32, cred_idr, CRED_RESIDENT_LEN);
+        memcpy(data + 32 + CRED_RESIDENT_LEN, cred_id, cred_id_len);
+        ef = file_new((uint16_t)(EF_CRED + sloti));
+        ret = ef ? file_put_data(ef, data, (uint32_t)cred_id_len + 32 + CRED_RESIDENT_LEN) : PICOKEYS_ERR_NO_MEMORY;
+        free(data);
+    }
+    if (ret != PICOKEYS_OK) {
+        credential_free(&cred);
+        return ret;
+    }
 
     if (new_record == true) { //increase rps
         sloti = -1;
@@ -502,6 +530,7 @@ int credential_store(const uint8_t *cred_id, size_t cred_id_len, const uint8_t *
             }
         }
         if (sloti == -1) {
+            credential_free(&cred);
             return -1;
         }
         ef = file_search((uint16_t)(EF_RP + sloti));
@@ -616,7 +645,122 @@ bool credential_resident_id_uses_stable_keys(const uint8_t *resident_id, size_t 
            memcmp(resident_id + 4, CRED_PROTO_26_S, CRED_PROTO_RESIDENT_LEN) == 0;
 }
 
+static int credential_resident_container_read_alloc(const file_t *ef, uint16_t object_type, uint8_t **data, size_t *data_len) {
+    if (!resident_container_is_marker(ef) || !data || !data_len) {
+        return PICOKEYS_ERR_NULL_PARAM;
+    }
+    *data = NULL;
+    *data_len = 0;
+    uint32_t object_size = 0;
+    int ret = resident_container_object_size((uint8_t)ef->fid, object_type, &object_size);
+    if (ret != PICOKEYS_OK) {
+        return ret;
+    }
+    if (object_size > 0) {
+        *data = (uint8_t *)calloc(1, object_size);
+        if (!*data) {
+            return PICOKEYS_ERR_MEMORY_FATAL;
+        }
+    }
+    size_t written = 0;
+    ret = resident_container_read((uint8_t)ef->fid, object_type, *data, object_size, &written);
+    if (ret != PICOKEYS_OK || written != object_size) {
+        if (*data) {
+            mbedtls_platform_zeroize(*data, object_size);
+            free(*data);
+            *data = NULL;
+        }
+        return ret == PICOKEYS_OK ? PICOKEYS_WRONG_LENGTH : ret;
+    }
+    *data_len = written;
+    return PICOKEYS_OK;
+}
+
+int credential_resident_rp_id_hash(const file_t *ef, uint8_t rp_id_hash[32]) {
+    if (!file_has_data(ef) || !rp_id_hash) {
+        return PICOKEYS_ERR_NULL_PARAM;
+    }
+    if (!resident_container_is_marker(ef)) {
+        if (file_get_size(ef) < 32) {
+            return PICOKEYS_WRONG_LENGTH;
+        }
+        memcpy(rp_id_hash, file_get_data(ef), 32);
+        return PICOKEYS_OK;
+    }
+    size_t written = 0;
+    int ret = resident_container_read((uint8_t)ef->fid, FIDO_RESIDENT_OBJECT_RP_ID_HASH, rp_id_hash, 32, &written);
+    return ret == PICOKEYS_OK && written == 32 ? PICOKEYS_OK : (ret == PICOKEYS_OK ? PICOKEYS_WRONG_LENGTH : ret);
+}
+
+bool credential_resident_matches_rp(const file_t *ef, const uint8_t rp_id_hash[32]) {
+    uint8_t stored_hash[32];
+    return rp_id_hash && credential_resident_rp_id_hash(ef, stored_hash) == PICOKEYS_OK && mbedtls_ct_memcmp(stored_hash, rp_id_hash, sizeof(stored_hash)) == 0;
+}
+
+bool credential_resident_matches_id(const file_t *ef, const uint8_t *resident_id, size_t resident_id_len) {
+    if (!file_has_data(ef) || !resident_id || resident_id_len != CRED_RESIDENT_LEN) {
+        return false;
+    }
+    uint8_t stored_id[CRED_RESIDENT_LEN];
+    if (resident_container_is_marker(ef)) {
+        size_t written = 0;
+        if (resident_container_read((uint8_t)ef->fid, FIDO_RESIDENT_OBJECT_CLIENT_ID, stored_id, sizeof(stored_id), &written) != PICOKEYS_OK || written != sizeof(stored_id)) {
+            return false;
+        }
+    }
+    else if (file_get_size(ef) >= 32 + CRED_RESIDENT_LEN && credential_is_resident(file_get_data(ef) + 32, file_get_size(ef) - 32)) {
+        memcpy(stored_id, file_get_data(ef) + 32, sizeof(stored_id));
+    }
+    else if (file_get_size(ef) > 32) {
+        if (credential_derive_resident(file_get_data(ef) + 32, file_get_size(ef) - 32, stored_id) != 0) {
+            return false;
+        }
+    }
+    else {
+        return false;
+    }
+    return mbedtls_ct_memcmp(stored_id, resident_id, sizeof(stored_id)) == 0;
+}
+
 int credential_load_resident(const file_t *ef, const uint8_t *rp_id_hash, Credential *cred) {
+    if (!file_has_data(ef) || !rp_id_hash || !cred) {
+        return CTAP1_ERR_INVALID_PARAMETER;
+    }
+    if (resident_container_is_marker(ef)) {
+        uint8_t stored_hash[32];
+        if (credential_resident_rp_id_hash(ef, stored_hash) != PICOKEYS_OK || mbedtls_ct_memcmp(stored_hash, rp_id_hash, sizeof(stored_hash)) != 0) {
+            return CTAP2_ERR_NO_CREDENTIALS;
+        }
+        uint8_t *credential = NULL;
+        uint8_t *resident_id = NULL;
+        size_t credential_len = 0;
+        size_t resident_id_len = 0;
+        int ret = credential_resident_container_read_alloc(ef, FIDO_RESIDENT_OBJECT_CREDENTIAL, &credential, &credential_len);
+        if (ret == PICOKEYS_OK) {
+            ret = credential_resident_container_read_alloc(ef, FIDO_RESIDENT_OBJECT_CLIENT_ID, &resident_id, &resident_id_len);
+        }
+        if (ret == PICOKEYS_OK && resident_id_len != CRED_RESIDENT_LEN) {
+            ret = PICOKEYS_WRONG_LENGTH;
+        }
+        if (ret == PICOKEYS_OK) {
+            ret = credential_load(credential, credential_len, rp_id_hash, cred);
+        }
+        if (ret == 0) {
+            cred->residentId.present = true;
+            cred->residentId.len = resident_id_len;
+            cred->residentId.data = resident_id;
+            resident_id = NULL;
+        }
+        if (credential) {
+            mbedtls_platform_zeroize(credential, credential_len);
+            free(credential);
+        }
+        free(resident_id);
+        return ret;
+    }
+    if (file_get_size(ef) <= 32) {
+        return CTAP2_ERR_NO_CREDENTIALS;
+    }
     if (credential_is_resident(file_get_data(ef) + 32, file_get_size(ef) - 32)) {
         int ret = credential_load(file_get_data(ef) + 32 + CRED_RESIDENT_LEN, file_get_size(ef) - 32 - CRED_RESIDENT_LEN, rp_id_hash, cred);
         if (ret == 0) {
@@ -632,4 +776,87 @@ int credential_load_resident(const file_t *ef, const uint8_t *rp_id_hash, Creden
         return ret;
     }
     return credential_load(file_get_data(ef) + 32, file_get_size(ef) - 32, rp_id_hash, cred);
+}
+
+int credential_resident_public_key(const file_t *ef, uint8_t **public_key, size_t *public_key_len) {
+    if (!public_key || !public_key_len) {
+        return PICOKEYS_ERR_NULL_PARAM;
+    }
+    if (!resident_container_is_marker(ef)) {
+        *public_key = NULL;
+        *public_key_len = 0;
+        return PICOKEYS_ERR_FILE_NOT_FOUND;
+    }
+    return credential_resident_container_read_alloc(ef, FIDO_RESIDENT_OBJECT_PUBLIC_KEY, public_key, public_key_len);
+}
+
+int credential_resident_update(const file_t *ef, const uint8_t *credential, size_t credential_len) {
+    if (!file_has_data(ef) || (!credential && credential_len > 0)) {
+        return PICOKEYS_ERR_NULL_PARAM;
+    }
+    if (resident_container_is_marker(ef)) {
+        return resident_container_update_credential((uint8_t)ef->fid, credential, credential_len);
+    }
+    uint8_t rp_id_hash[32];
+    if (credential_resident_rp_id_hash(ef, rp_id_hash) != PICOKEYS_OK) {
+        return PICOKEYS_WRONG_DATA;
+    }
+    uint8_t resident_id[CRED_RESIDENT_LEN];
+    if (file_get_size(ef) >= 32 + CRED_RESIDENT_LEN && credential_is_resident(file_get_data(ef) + 32, file_get_size(ef) - 32)) {
+        memcpy(resident_id, file_get_data(ef) + 32, sizeof(resident_id));
+    }
+    else {
+        if (file_get_size(ef) <= 32 || credential_derive_resident(file_get_data(ef) + 32, file_get_size(ef) - 32, resident_id) != 0) {
+            return PICOKEYS_WRONG_DATA;
+        }
+    }
+    if (credential_len > SIZE_MAX - 32 - sizeof(resident_id)) {
+        return PICOKEYS_WRONG_LENGTH;
+    }
+    size_t updated_len = 32 + sizeof(resident_id) + credential_len;
+    uint8_t *updated = (uint8_t *)calloc(1, updated_len);
+    if (!updated) {
+        return PICOKEYS_ERR_MEMORY_FATAL;
+    }
+    memcpy(updated, rp_id_hash, sizeof(rp_id_hash));
+    memcpy(updated + 32, resident_id, sizeof(resident_id));
+    memcpy(updated + 32 + sizeof(resident_id), credential, credential_len);
+    int ret = file_put_data((file_t *)ef, updated, (uint32_t)updated_len);
+    mbedtls_platform_zeroize(updated, updated_len);
+    free(updated);
+    return ret;
+}
+
+int credential_resident_delete(const file_t *ef) {
+    if (!file_has_data(ef)) {
+        return PICOKEYS_ERR_FILE_NOT_FOUND;
+    }
+    if (resident_container_is_marker(ef)) {
+        return resident_container_delete((uint8_t)ef->fid);
+    }
+    return file_delete((file_t *)ef);
+}
+
+int credential_resident_verify(const file_t *ef, const uint8_t rp_id_hash[32], bool silent) {
+    if (!file_has_data(ef) || !rp_id_hash) {
+        return CTAP1_ERR_INVALID_PARAMETER;
+    }
+    if (!resident_container_is_marker(ef)) {
+        if (file_get_size(ef) <= 32) {
+            return CTAP2_ERR_NO_CREDENTIALS;
+        }
+        size_t offset = credential_is_resident(file_get_data(ef) + 32, file_get_size(ef) - 32) ? 32 + CRED_RESIDENT_LEN : 32;
+        return credential_verify(file_get_data(ef) + offset, file_get_size(ef) - offset, rp_id_hash, silent);
+    }
+    uint8_t *credential = NULL;
+    size_t credential_len = 0;
+    int ret = credential_resident_container_read_alloc(ef, FIDO_RESIDENT_OBJECT_CREDENTIAL, &credential, &credential_len);
+    if (ret == PICOKEYS_OK) {
+        ret = credential_verify(credential, credential_len, rp_id_hash, silent);
+    }
+    if (credential) {
+        mbedtls_platform_zeroize(credential, credential_len);
+        free(credential);
+    }
+    return ret;
 }

@@ -439,11 +439,10 @@ int cbor_make_credential(const uint8_t *data, size_t len) {
         if (credential_is_resident(excludeList[e].id.data, excludeList[e].id.len)) {
             for (int i = 0; i < MAX_RESIDENT_CREDENTIALS; i++) {
                 file_t *ef_cred = file_search((uint16_t)(EF_CRED + i));
-                if (!file_has_data(ef_cred) || memcmp(file_get_data(ef_cred), rp_id_hash, 32) != 0) {
+                if (!file_has_data(ef_cred) || !credential_resident_matches_rp(ef_cred, rp_id_hash)) {
                     continue;
                 }
-                uint8_t *cred_idr = file_get_data(ef_cred) + 32;
-                if (memcmp(cred_idr, excludeList[e].id.data, CRED_RESIDENT_LEN) == 0) {
+                if (credential_resident_matches_id(ef_cred, excludeList[e].id.data, excludeList[e].id.len)) {
                     if (credential_load_resident(ef_cred, rp_id_hash, &ecred) == 0 && (ecred.extensions.credProtect != CRED_PROT_UV_REQUIRED || (flags & FIDO2_AUT_FLAG_UV))) {
                         credential_free(&ecred);
                         CBOR_ERROR(CTAP2_ERR_CREDENTIAL_EXCLUDED);
@@ -778,7 +777,7 @@ int cbor_make_credential(const uint8_t *data, size_t len) {
     resp_size = cbor_encoder_get_buffer_size(&encoder, ctap_resp->init.data + 1);
 
     if (options.rk == ptrue) {
-        if (credential_store(cred_id, cred_id_len, rp_id_hash) != 0) {
+        if (credential_store(cred_id, cred_id_len, rp_id_hash, cbor_buf, rs) != 0) {
             CBOR_ERROR(CTAP2_ERR_KEY_STORE_FULL);
         }
         dev_state_update(DEV_STATE_CRED_STATE);

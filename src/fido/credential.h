@@ -98,7 +98,7 @@ extern int credential_create(CborCharString *rpId,
                              uint8_t *cred_id,
                              uint16_t *cred_id_len);
 extern void credential_free(Credential *cred);
-extern int credential_store(const uint8_t *cred_id, size_t cred_id_len, const uint8_t *rp_id_hash);
+extern int credential_store(const uint8_t *cred_id, size_t cred_id_len, const uint8_t *rp_id_hash, const uint8_t *public_key, size_t public_key_len);
 extern int credential_load(const uint8_t *cred_id, size_t cred_id_len, const uint8_t *rp_id_hash, Credential *cred);
 extern int credential_derive_hmac_key(const uint8_t *cred_id, size_t cred_id_len, uint8_t *outk);
 extern int credential_derive_large_blob_key(const uint8_t *cred_id, size_t cred_id_len, uint8_t *outk);
@@ -106,6 +106,13 @@ extern int credential_derive_resident(const uint8_t *cred_id, size_t cred_id_len
 extern bool credential_is_resident(const uint8_t *cred_id, size_t cred_id_len);
 extern bool credential_resident_id_uses_stable_keys(const uint8_t *resident_id, size_t resident_id_len);
 extern int credential_load_resident(const file_t *ef, const uint8_t *rp_id_hash, Credential *cred);
+extern bool credential_resident_matches_rp(const file_t *ef, const uint8_t rp_id_hash[32]);
+extern bool credential_resident_matches_id(const file_t *ef, const uint8_t *resident_id, size_t resident_id_len);
+extern int credential_resident_rp_id_hash(const file_t *ef, uint8_t rp_id_hash[32]);
+extern int credential_resident_public_key(const file_t *ef, uint8_t **public_key, size_t *public_key_len);
+extern int credential_resident_update(const file_t *ef, const uint8_t *credential, size_t credential_len);
+extern int credential_resident_delete(const file_t *ef);
+extern int credential_resident_verify(const file_t *ef, const uint8_t rp_id_hash[32], bool silent);
 extern int credential_rp_id_decrypt(const file_t *ef, uint8_t **rp_id, size_t *rp_id_len);
 extern int credential_migrate_rp_secure(void);
 

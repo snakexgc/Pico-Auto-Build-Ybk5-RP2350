@@ -322,10 +322,10 @@ int cbor_get_assertion(const uint8_t *data, size_t len, bool next) {
                 if (credential_is_resident(allowList[e].id.data, allowList[e].id.len)) {
                     for (int i = 0; i < MAX_RESIDENT_CREDENTIALS && creds_len < MAX_CREDENTIAL_COUNT_IN_LIST; i++) {
                         file_t *ef = file_search((uint16_t)(EF_CRED + i));
-                        if (!file_has_data(ef) || memcmp(file_get_data(ef), rp_id_hash, 32) != 0) {
+                        if (!file_has_data(ef) || !credential_resident_matches_rp(ef, rp_id_hash)) {
                             continue;
                         }
-                        if (memcmp(file_get_data(ef) + 32, allowList[e].id.data, CRED_RESIDENT_LEN) == 0) {
+                        if (credential_resident_matches_id(ef, allowList[e].id.data, allowList[e].id.len)) {
                             if (credential_load_resident(ef, rp_id_hash, &creds[creds_len]) != 0) {
                                 // Should never happen
                                 credential_free(&creds[creds_len]);
@@ -349,10 +349,10 @@ int cbor_get_assertion(const uint8_t *data, size_t len, bool next) {
                         if (!resident) {
                             for (int i = 0; i < MAX_RESIDENT_CREDENTIALS && creds_len < MAX_CREDENTIAL_COUNT_IN_LIST; i++) {
                                 file_t *ef = file_search((uint16_t)(EF_CRED + i));
-                                if (!file_has_data(ef) || memcmp(file_get_data(ef), rp_id_hash, 32) != 0) {
+                                if (!file_has_data(ef) || !credential_resident_matches_rp(ef, rp_id_hash)) {
                                     continue;
                                 }
-                                if (memcmp(file_get_data(ef) + 32, allowList[e].id.data, allowList[e].id.len) == 0) {
+                                if (credential_resident_matches_id(ef, allowList[e].id.data, allowList[e].id.len)) {
                                     resident = true;
                                     break;
                                 }
@@ -368,7 +368,7 @@ int cbor_get_assertion(const uint8_t *data, size_t len, bool next) {
         else {
             for (int i = 0; i < MAX_RESIDENT_CREDENTIALS && creds_len < MAX_CREDENTIAL_COUNT_IN_LIST; i++) {
                 file_t *ef = file_search((uint16_t)(EF_CRED + i));
-                if (!file_has_data(ef) || memcmp(file_get_data(ef), rp_id_hash, 32) != 0) {
+                if (!file_has_data(ef) || !credential_resident_matches_rp(ef, rp_id_hash)) {
                     continue;
                 }
                 int ret = credential_load_resident(ef, rp_id_hash, &creds[creds_len]);
@@ -422,11 +422,11 @@ int cbor_get_assertion(const uint8_t *data, size_t len, bool next) {
                     if (credential_is_resident(allowList[e].id.data, allowList[e].id.len)) {
                         for (int i = 0; i < MAX_RESIDENT_CREDENTIALS && creds_len < MAX_CREDENTIAL_COUNT_IN_LIST; i++) {
                             file_t *ef = file_search((uint16_t)(EF_CRED + i));
-                            if (!file_has_data(ef) || memcmp(file_get_data(ef), rp_id_hash, 32) != 0) {
+                            if (!file_has_data(ef) || !credential_resident_matches_rp(ef, rp_id_hash)) {
                                 continue;
                             }
-                            if (memcmp(file_get_data(ef) + 32, allowList[e].id.data, CRED_RESIDENT_LEN) == 0) {
-                                if (credential_verify(file_get_data(ef) + 32 + CRED_RESIDENT_LEN, file_get_size(ef) - 32 - CRED_RESIDENT_LEN, rp_id_hash, true) == 0) {
+                            if (credential_resident_matches_id(ef, allowList[e].id.data, allowList[e].id.len)) {
+                                if (credential_resident_verify(ef, rp_id_hash, true) == 0) {
                                     numberOfCredentials++;
                                 }
                                 break;

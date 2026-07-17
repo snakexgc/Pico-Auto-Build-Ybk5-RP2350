@@ -114,6 +114,7 @@ list(APPEND SOURCES
     ${CMAKE_CURRENT_LIST_DIR}/src/fido/fido.c
     ${CMAKE_CURRENT_LIST_DIR}/src/fido/object_authorization.c
     ${CMAKE_CURRENT_LIST_DIR}/src/fido/object_provider.c
+    ${CMAKE_CURRENT_LIST_DIR}/src/fido/resident_container.c
     ${CMAKE_CURRENT_LIST_DIR}/src/fido/files.c
     ${CMAKE_CURRENT_LIST_DIR}/src/fido/cmd_register.c
     ${CMAKE_CURRENT_LIST_DIR}/src/fido/cmd_authenticate.c
@@ -240,6 +241,24 @@ if(NOT ESP_PLATFORM)
         endif()
         target_link_libraries(fido_object_authorization_test PRIVATE mbedtls)
         add_test(NAME fido_object_authorization_test COMMAND fido_object_authorization_test)
+
+        add_executable(fido_resident_container_test
+            ${CMAKE_CURRENT_LIST_DIR}/pico-keys-sdk/src/fs/object_container.c
+            ${CMAKE_CURRENT_LIST_DIR}/pico-keys-sdk/src/fs/object_crypto_provider.c
+            ${CMAKE_CURRENT_LIST_DIR}/pico-keys-sdk/src/fs/object_policy.c
+            ${CMAKE_CURRENT_LIST_DIR}/pico-keys-sdk/src/fs/object_store_txn.c
+            ${CMAKE_CURRENT_LIST_DIR}/src/fido/object_provider.c
+            ${CMAKE_CURRENT_LIST_DIR}/src/fido/resident_container.c
+            ${CMAKE_CURRENT_LIST_DIR}/tests/fido_resident_container_test.c
+        )
+        target_include_directories(fido_resident_container_test PRIVATE ${INCLUDES})
+        if(MSVC)
+            target_compile_options(fido_resident_container_test PRIVATE /W4 /WX)
+        else()
+            target_compile_options(fido_resident_container_test PRIVATE -Wall -Wextra -Werror)
+        endif()
+        target_link_libraries(fido_resident_container_test PRIVATE mbedtls)
+        add_test(NAME fido_resident_container_test COMMAND fido_resident_container_test)
     else()
         target_link_libraries(
             pico_fido

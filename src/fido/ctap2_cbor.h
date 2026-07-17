@@ -253,6 +253,7 @@ typedef struct CborCharString {
         } } while (0)
 
 extern CborError COSE_key(mbedtls_ecp_keypair *, CborEncoder *, CborEncoder *);
+extern CborError COSE_cached_key(const uint8_t *data, size_t data_len, CborEncoder *mapEncoderParent, CborEncoder *mapEncoder);
 extern CborError COSE_key_shared(mbedtls_ecdh_context *key,
                                  CborEncoder *mapEncoderParent,
                                  CborEncoder *mapEncoder);
