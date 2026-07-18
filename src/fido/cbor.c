@@ -220,6 +220,46 @@ CborError COSE_key(mbedtls_ecp_keypair *key, CborEncoder *mapEncoderParent,
 #endif
     return COSE_key_params(crv, alg, &key->grp, &key->Q, mapEncoderParent, mapEncoder);
 }
+
+CborError COSE_cached_key(const uint8_t *data, size_t data_len, CborEncoder *mapEncoderParent, CborEncoder *mapEncoder) {
+    if (!data || data_len == 0 || !mapEncoderParent || !mapEncoder) {
+        return CborErrorIllegalType;
+    }
+    CborParser parser;
+    CborValue value;
+    int64_t kty = 0;
+    int64_t alg = 0;
+    int64_t crv = 0;
+    CborByteString x = { 0 };
+    CborByteString y = { 0 };
+    CborError error = cbor_parser_init(data, data_len, 0, &parser, &value);
+    if (error == CborNoError) {
+        error = COSE_read_key(&value, &kty, &alg, &crv, &x, &y);
+    }
+    if (error != CborNoError || !x.present || x.len == 0) {
+        CBOR_FREE_BYTE_STRING(x);
+        CBOR_FREE_BYTE_STRING(y);
+        return error == CborNoError ? CborErrorImproperValue : error;
+    }
+    CBOR_CHECK(cbor_encoder_create_map(mapEncoderParent, mapEncoder, y.present ? 5 : 4));
+    CBOR_CHECK(cbor_encode_int(mapEncoder, 1));
+    CBOR_CHECK(cbor_encode_int(mapEncoder, kty));
+    CBOR_CHECK(cbor_encode_int(mapEncoder, 3));
+    CBOR_CHECK(cbor_encode_int(mapEncoder, alg));
+    CBOR_CHECK(cbor_encode_int(mapEncoder, -1));
+    CBOR_CHECK(cbor_encode_int(mapEncoder, crv));
+    CBOR_CHECK(cbor_encode_int(mapEncoder, -2));
+    CBOR_CHECK(cbor_encode_byte_string(mapEncoder, x.data, x.len));
+    if (y.present) {
+        CBOR_CHECK(cbor_encode_int(mapEncoder, -3));
+        CBOR_CHECK(cbor_encode_byte_string(mapEncoder, y.data, y.len));
+    }
+    CBOR_CHECK(cbor_encoder_close_container(mapEncoderParent, mapEncoder));
+err:
+    CBOR_FREE_BYTE_STRING(x);
+    CBOR_FREE_BYTE_STRING(y);
+    return error;
+}
 CborError COSE_key_shared(mbedtls_ecdh_context *key,
                           CborEncoder *mapEncoderParent,
                           CborEncoder *mapEncoder) {

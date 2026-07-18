@@ -37,6 +37,7 @@
 #endif
 #include <math.h>
 #include "management.h"
+#include "object_authorization.h"
 #include "hid/ctap_hid.h"
 #include "ctap2_cbor.h"
 #include "credential.h"
@@ -102,6 +103,7 @@ INITIALIZER ( fido_ctor ) {
 }
 
 static int fido_unload(void) {
+    fido_object_authorization_session_invalidate();
     return PICOKEYS_OK;
 }
 
@@ -505,6 +507,7 @@ void scan_all(void) {
 
 extern bool needs_power_cycle;
 void init_fido(void) {
+    fido_object_authorization_session_invalidate();
     scan_all();
     credential_migrate_rp_secure();
 #ifdef ENABLE_OTP_APP

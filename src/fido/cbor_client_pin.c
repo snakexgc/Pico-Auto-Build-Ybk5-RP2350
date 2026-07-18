@@ -33,6 +33,7 @@
 #include "random.h"
 #include "crypto_utils.h"
 #include "apdu.h"
+#include "object_authorization.h"
 
 uint32_t usage_timer = 0, initial_usage_time_limit = 0;
 uint32_t max_usage_time_period  = 600 * 1000;
@@ -74,28 +75,34 @@ static int beginUsingPinUvAuthToken(bool userIsPresent) {
     initial_usage_time_limit = board_millis();
     usage_timer = board_millis();
     paut.in_use = true;
+    fido_object_authorization_session_invalidate();
     return 0;
 }
 
 void clearUserPresentFlag(void) {
-    if (paut.in_use == true) {
+    if (paut.in_use == true && paut.user_present) {
         paut.user_present = false;
+        fido_object_authorization_session_invalidate();
     }
 }
 
 void clearUserVerifiedFlag(void) {
-    if (paut.in_use == true) {
+    if (paut.in_use == true && paut.user_verified) {
         paut.user_verified = false;
+        fido_object_authorization_session_invalidate();
     }
 }
 
 void clearPinUvAuthTokenPermissionsExceptLbw(void) {
-    if (paut.in_use == true) {
+    if (paut.in_use == true && paut.permissions != CTAP_PERMISSION_LBW) {
         paut.permissions = CTAP_PERMISSION_LBW;
+        fido_object_authorization_session_invalidate();
     }
 }
 
 static void stopUsingPinUvAuthToken(void) {
+    bool token_active = paut.in_use || paut.permissions != 0 || paut.has_rp_id || paut.user_present || paut.user_verified;
+
     paut.permissions = 0;
     usage_timer = 0;
     paut.in_use = false;
@@ -104,6 +111,9 @@ static void stopUsingPinUvAuthToken(void) {
     initial_usage_time_limit = 0;
     paut.user_present = paut.user_verified = false;
     user_present_time_limit = 0;
+    if (token_active) {
+        fido_object_authorization_session_invalidate();
+    }
 }
 
 bool getUserPresentFlagValue(void) {
@@ -195,6 +205,7 @@ int resetPinUvAuthToken(void) {
     paut.permissions = 0;
     paut.data = file_get_data(ef_authtoken);
     paut.len = file_get_size(ef_authtoken);
+    fido_object_authorization_session_invalidate();
     return 0;
 }
 
@@ -204,6 +215,7 @@ int resetPersistentPinUvAuthToken(void) {
     ppaut.permissions = 0;
     ppaut.data = file_get_data(ef_pauthtoken);
     ppaut.len = file_get_size(ef_pauthtoken);
+    fido_object_authorization_session_invalidate();
     return 0;
 }
 

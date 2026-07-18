@@ -23,6 +23,7 @@
 #include "files.h"
 #include "apdu.h"
 #include "credential.h"
+#include "resident_container.h"
 #include "mbedtls/constant_time.h"
 
 uint16_t rp_counter = 1;
@@ -257,7 +258,7 @@ int cbor_cred_mgmt(const uint8_t *data, size_t len) {
         uint16_t skip = 0;
         for (int i = 0; i < MAX_RESIDENT_CREDENTIALS; i++) {
             file_t *tef = file_search((uint16_t)(EF_CRED + i));
-            if (file_has_data(tef) && memcmp(file_get_data(tef), rpIdHash.data, 32) == 0) {
+            if (file_has_data(tef) && credential_resident_matches_rp(tef, rpIdHash.data)) {
                 if (++skip == cred_counter) {
                     if (cred_ef == NULL) {
                         cred_ef = tef;
@@ -287,9 +288,17 @@ int cbor_cred_mgmt(const uint8_t *data, size_t len) {
             key_seed_len = cred.residentId.len;
         }
 
+        uint8_t *cached_public_key = NULL;
+        size_t cached_public_key_len = 0;
+        int cached_public_key_status = credential_resident_public_key(cred_ef, &cached_public_key, &cached_public_key_len);
+        bool use_cached_public_key = cached_public_key_status == PICOKEYS_OK;
+        if (resident_container_is_marker(cred_ef) && !use_cached_public_key) {
+            credential_free(&cred);
+            CBOR_ERROR(CTAP2_ERR_NOT_ALLOWED);
+        }
         mbedtls_ecp_keypair key;
         mbedtls_ecp_keypair_init(&key);
-        if (fido_load_key((int)cred.curve, key_seed, &key) != 0) {
+        if (!use_cached_public_key && fido_load_key((int)cred.curve, key_seed, &key) != 0) {
             credential_free(&cred);
             mbedtls_ecp_keypair_free(&key);
             CBOR_ERROR(CTAP2_ERR_NOT_ALLOWED);
@@ -350,7 +359,12 @@ int cbor_cred_mgmt(const uint8_t *data, size_t len) {
         CBOR_CHECK(cbor_encoder_close_container(&mapEncoder, &mapEncoder2));
 
         CBOR_CHECK(cbor_encode_uint(&mapEncoder, 0x08));
-        CBOR_CHECK(COSE_key(&key, &mapEncoder, &mapEncoder2));
+        if (use_cached_public_key) {
+            CBOR_CHECK(COSE_cached_key(cached_public_key, cached_public_key_len, &mapEncoder, &mapEncoder2));
+        }
+        else {
+            CBOR_CHECK(COSE_key(&key, &mapEncoder, &mapEncoder2));
+        }
 
         if (subcommand == 0x04) {
             CBOR_CHECK(cbor_encode_uint(&mapEncoder, 0x09));
@@ -381,6 +395,7 @@ int cbor_cred_mgmt(const uint8_t *data, size_t len) {
             CBOR_CHECK(cbor_encode_boolean(&mapEncoder, false));
         }
         credential_free(&cred);
+        free(cached_public_key);
         mbedtls_ecp_keypair_free(&key);
     }
     else if (subcommand == 0x06) {
@@ -396,9 +411,9 @@ int cbor_cred_mgmt(const uint8_t *data, size_t len) {
         }
         for (int i = 0; i < MAX_RESIDENT_CREDENTIALS; i++) {
             file_t *ef = file_search((uint16_t)(EF_CRED + i));
-            if (file_has_data(ef) && memcmp(file_get_data(ef) + 32, credentialId.id.data, CRED_RESIDENT_LEN) == 0) {
-                uint8_t *rp_id_hash = file_get_data(ef);
-                if (file_delete(ef) != 0) {
+            if (file_has_data(ef) && credential_resident_matches_id(ef, credentialId.id.data, credentialId.id.len)) {
+                uint8_t rp_id_hash[32];
+                if (credential_resident_rp_id_hash(ef, rp_id_hash) != PICOKEYS_OK || credential_resident_delete(ef) != PICOKEYS_OK) {
                     CBOR_ERROR(CTAP2_ERR_NOT_ALLOWED);
                 }
                 for (int j = 0; j < MAX_RESIDENT_CREDENTIALS; j++) {
@@ -437,10 +452,10 @@ int cbor_cred_mgmt(const uint8_t *data, size_t len) {
         }
         for (int i = 0; i < MAX_RESIDENT_CREDENTIALS; i++) {
             file_t *ef = file_search((uint16_t)(EF_CRED + i));
-            if (file_has_data(ef) && memcmp(file_get_data(ef) + 32, credentialId.id.data, CRED_RESIDENT_LEN) == 0) {
+            if (file_has_data(ef) && credential_resident_matches_id(ef, credentialId.id.data, credentialId.id.len)) {
                 Credential cred = { 0 };
-                uint8_t *rp_id_hash = file_get_data(ef);
-                if (credential_load_resident(ef, rp_id_hash, &cred) != 0) {
+                uint8_t rp_id_hash[32];
+                if (credential_resident_rp_id_hash(ef, rp_id_hash) != PICOKEYS_OK || credential_load_resident(ef, rp_id_hash, &cred) != 0) {
                     CBOR_ERROR(CTAP2_ERR_NOT_ALLOWED);
                 }
                 if (user.id.len != cred.userId.len || mbedtls_ct_memcmp(user.id.data, cred.userId.data, user.id.len) != 0) {
@@ -456,29 +471,10 @@ int cbor_cred_mgmt(const uint8_t *data, size_t len) {
                     credential_free(&cred);
                     CBOR_ERROR(CTAP2_ERR_NOT_ALLOWED);
                 }
-                uint8_t rp_id_hash_copy[32] = {0};
-                uint8_t resident_id_copy[CRED_RESIDENT_LEN] = {0};
-                memcpy(rp_id_hash_copy, rp_id_hash, sizeof(rp_id_hash_copy));
-                if (cred.residentId.present == true && cred.residentId.len == CRED_RESIDENT_LEN) {
-                    memcpy(resident_id_copy, cred.residentId.data, CRED_RESIDENT_LEN);
-                }
-                else {
-                    credential_derive_resident(cred.id.data, cred.id.len, resident_id_copy);
-                }
                 credential_free(&cred);
-
-                uint8_t *updated = (uint8_t *) calloc(1, 32 + CRED_RESIDENT_LEN + newcred_len);
-                if (updated == NULL) {
-                    CBOR_ERROR(CTAP2_ERR_PROCESSING);
-                }
-                memcpy(updated, rp_id_hash_copy, sizeof(rp_id_hash_copy));
-                memcpy(updated + 32, resident_id_copy, CRED_RESIDENT_LEN);
-                memcpy(updated + 32 + CRED_RESIDENT_LEN, newcred, newcred_len);
-                if (file_put_data(ef, updated, (uint16_t)(32 + CRED_RESIDENT_LEN + newcred_len)) != PICOKEYS_OK) {
-                    free(updated);
+                if (credential_resident_update(ef, newcred, newcred_len) != PICOKEYS_OK) {
                     CBOR_ERROR(CTAP2_ERR_NOT_ALLOWED);
                 }
-                free(updated);
                 dev_state_update(DEV_STATE_CRED_STATE);
                 flash_commit();
                 goto err; //no error
